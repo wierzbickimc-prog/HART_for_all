@@ -23,8 +23,9 @@ wizards) — those live in device descriptions and are out of scope here.
   - `units.py` — engineering-unit code table
   - `transport.py` — serial half-duplex transaction + configurable keying
   - `master.py` — Universal + Common-Practice commands with decoders
-- `app.py` — the Tkinter GUI (tabs: Connection, Variables, Config, Ranging,
-  Calibration, Diagnostics/Trace)
+- `app.py` — the Tkinter GUI (tabs: Connection, Variables, Process Study,
+  Config, Ranging, Calibration, Device Profile, Diagnostics/Trace)
+- `hart_emulator.py` — fake HART device for testing without hardware
 - `cli.py` — headless equivalent for bring-up / scripting
 - `tests/test_frame.py` — offline correctness tests (no hardware needed)
 
@@ -144,6 +145,53 @@ at applied input), 38 (reset config-changed), 40 (fixed-current loop test), 42
 
 ---
 
+## Process Study tab (trending + datalogger)
+
+Logs a variable over time, trends it live, and exports to CSV for analysis.
+
+**Logging.** Pick the variable (PV / SV / TV / QV / loop current / percent of
+range), set an interval, press **Start logging**. Each sample is one cmd 3 plus
+one cmd 2, so at 1200 baud a sample takes a few hundred ms — the interval is a
+*floor*, not a guarantee. Every row therefore carries its real wall-clock
+timestamp rather than an assumed period. Transient timeouts don't stop a run.
+
+**CSV export.** Timestamps are `YYYY-MM-DD HH:MM:SS.mmm` — date and time to the
+millisecond. Every sample writes all four dynamic variables with their units,
+loop current and percent of range; the smoothed series and a pass/fail
+`in_limits` column are added when those options are on. The file is named after
+the device tag when the Config tab has loaded one.
+
+**Analytics** (checkboxes, all computed over every logged sample — the display
+stride on long runs affects only the chart, never the maths):
+
+| Option | Meaning |
+| --- | --- |
+| Mean | arithmetic mean, also drawn as a grey dashed line |
+| Std dev | sample standard deviation (n-1) |
+| Min / Max | extremes |
+| Range | peak-to-peak |
+| Cp / Cpk | capability — needs both limits and σ > 0 |
+| Out-of-limit count | samples outside the limits, with percentage |
+
+`Cp = (USL - LSL) / 6σ` measures spread against the limit band;
+`Cpk = min(USL - mean, mean - LSL) / 3σ` also penalises being off-centre. A
+process can have a healthy Cp and a poor Cpk purely by sitting off target.
+
+**Control limits.** Enter upper and/or lower and tick **Apply**. They draw as
+red dashed lines and drive the out-of-limit count and capability numbers. One
+sided is fine (the count still works; Cp/Cpk need both). Values sitting exactly
+on a limit count as in-limits.
+
+**Smoothing.** A trailing moving average of the chosen window, overlaid in
+orange. It's causal — each point averages only samples up to and including
+itself, so a later excursion never retroactively alters earlier ones, and the
+first few points simply average fewer samples.
+
+The tab stays reachable after a disconnect so you can still analyse and export
+a run you've already collected.
+
+---
+
 ## Safety
 
 The Calibration tab and range writes change a **live 4–20 mA loop**. Put the
@@ -157,6 +205,8 @@ Every write in the GUI asks for confirmation first.
 
 ```bash
 python3 tests/test_frame.py
+python3 tests/test_profile.py
+python3 tests/test_study.py
 ```
 Verifies checksum, short/long frame build, long-address derivation from a
 Command-0 reply, response parsing (incl. bad-checksum detection), and the

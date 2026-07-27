@@ -11,12 +11,16 @@ Deps: pyserial (pip install pyserial), Tkinter (system 'python3-tk' on Ubuntu).
 """
 from __future__ import annotations
 
+import csv
+import math
 import queue
+import statistics
 import subprocess
 import sys
 import threading
 import traceback
 import os
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -25,6 +29,60 @@ from hart import units as U
 from hart.profile import DeviceProfile, ProfileError
 from hart.transport import HartTransport, TransportConfig, list_serial_ports
 from hart.master import HartMaster, HartError, HartTimeout, HartCommError
+
+
+# --------------------------------------------------------------------------
+# Process-study analysis. Pure functions -- no Tk, no device -- so they can be
+# unit-tested offline like the rest of the core (see tests/test_study.py).
+# --------------------------------------------------------------------------
+TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f"      # trimmed to milliseconds on write
+
+
+def format_timestamp(dt: datetime) -> str:
+    """'2026-07-27 14:23:45.123' -- date and time to the millisecond."""
+    return dt.strftime(TS_FORMAT)[:-3]
+
+
+def moving_average(values, window: int):
+    """Trailing moving average. Element i averages the up-to-`window` samples
+    ending at i, so the result is causal (no peeking ahead) and the same length
+    as the input -- the early points just average fewer samples."""
+    if window < 1:
+        raise ValueError("window must be >= 1")
+    out, acc = [], 0.0
+    for i, v in enumerate(values):
+        acc += v
+        if i >= window:
+            acc -= values[i - window]
+        out.append(acc / min(i + 1, window))
+    return out
+
+
+def study_stats(values, usl=None, lsl=None) -> dict:
+    """Descriptive statistics plus, when limits are supplied, capability.
+
+    Cp  = (USL - LSL) / 6s        -- spread vs. the limit band
+    Cpk = min(USL - mean, mean - LSL) / 3s   -- spread *and* centering
+    Both need two-sided limits and a non-zero sigma; they are omitted (None)
+    otherwise rather than reported as infinity.
+    """
+    n = len(values)
+    if n == 0:
+        return {"n": 0}
+    mean = statistics.fmean(values)
+    lo, hi = min(values), max(values)
+    out = {"n": n, "mean": mean, "min": lo, "max": hi, "range": hi - lo,
+           "stdev": statistics.stdev(values) if n >= 2 else None}
+
+    if usl is not None or lsl is not None:
+        out["out_of_limits"] = sum(
+            1 for v in values
+            if (usl is not None and v > usl) or (lsl is not None and v < lsl))
+    s = out["stdev"]
+    if usl is not None and lsl is not None and s:
+        out["cp"] = (usl - lsl) / (6 * s)
+        out["cpk"] = min(usl - mean, mean - lsl) / (3 * s)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -100,6 +158,7 @@ class App(tk.Tk):
 
         self._tab_connection()
         self._tab_variables()
+        self._tab_process_study()
         self._tab_config()
         self._tab_ranging()
         self._tab_calibration()
@@ -331,6 +390,9 @@ class App(tk.Tk):
 
     def _do_disconnect(self):
         self.polling = False
+        if self.study_running:          # keep the samples, just stop sampling
+            self.study_running = False
+            self.study_btn["text"] = "Start logging"
         m, t = self.master, self.transport
         self.master = self.transport = None
         self.connected = False
@@ -440,6 +502,401 @@ class App(tk.Tk):
         # dynamic-var response status via a cheap cmd 2 already done. Instead
         # decode from a fresh cmd 0? We piggyback: issue nothing extra here.
         pass
+
+    # ---- Process Study tab ------------------------------------------------
+    # Trend + datalogger. Deliberately NOT registered via _dev_tab(): it stays
+    # reachable after a disconnect so you can still analyse and export data you
+    # already collected.
+    STUDY_VARS = {
+        "PV": ("pv", "pv_unit"),
+        "SV": ("sv", "sv_unit"),
+        "TV": ("tv", "tv_unit"),
+        "QV": ("qv", "qv_unit"),
+        "Loop current (mA)": ("mA", None),
+        "Percent of range": ("pct", None),
+    }
+    STUDY_ANALYTICS = ["Mean", "Std dev", "Min / Max", "Range",
+                       "Cp / Cpk", "Out-of-limit count"]
+
+    def _tab_process_study(self):
+        f = ttk.Frame(self.nb, padding=8)
+        self.nb.add(f, text="Process Study")
+
+        self.study_samples: list[dict] = []
+        self.study_running = False
+        self.study_t0: datetime | None = None
+
+        # --- control strip -------------------------------------------------
+        ctl = ttk.Frame(f); ctl.pack(fill="x")
+        self.study_btn = ttk.Button(ctl, text="Start logging",
+                                    command=self._toggle_study)
+        self.study_btn.pack(side="left")
+        ttk.Label(ctl, text="Interval (ms):").pack(side="left", padx=(10, 2))
+        self.study_int = tk.StringVar(value="1000")
+        ttk.Entry(ctl, textvariable=self.study_int, width=6).pack(side="left")
+        ttk.Label(ctl, text="Variable:").pack(side="left", padx=(10, 2))
+        self.study_sel = tk.StringVar(value="PV")
+        cb = ttk.Combobox(ctl, textvariable=self.study_sel, width=17,
+                          state="readonly", values=list(self.STUDY_VARS))
+        cb.pack(side="left")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._study_refresh())
+        ttk.Button(ctl, text="Clear",
+                   command=self._study_clear).pack(side="left", padx=(10, 2))
+        ttk.Button(ctl, text="Export CSV...",
+                   command=self._study_export).pack(side="left")
+        self.study_count = tk.StringVar(value="0 samples")
+        ttk.Label(ctl, textvariable=self.study_count).pack(side="right")
+
+        # --- trend chart ---------------------------------------------------
+        self.study_canvas = tk.Canvas(f, height=250, bg="white",
+                                      highlightthickness=1,
+                                      highlightbackground="#bbb")
+        self.study_canvas.pack(fill="both", expand=True, pady=6)
+        self.study_canvas.bind("<Configure>", lambda e: self._study_redraw())
+
+        # --- options -------------------------------------------------------
+        opt = ttk.Frame(f); opt.pack(fill="x")
+
+        lim = ttk.LabelFrame(opt, text="Control limits", padding=6)
+        lim.pack(side="left", fill="y")
+        self.study_lim_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(lim, text="Apply", variable=self.study_lim_on,
+                        command=self._study_refresh
+                        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(lim, text="Upper:").grid(row=1, column=0, sticky="e")
+        self.study_usl = tk.StringVar(value="")
+        ttk.Entry(lim, textvariable=self.study_usl, width=9
+                  ).grid(row=1, column=1, padx=2, pady=1)
+        ttk.Label(lim, text="Lower:").grid(row=2, column=0, sticky="e")
+        self.study_lsl = tk.StringVar(value="")
+        ttk.Entry(lim, textvariable=self.study_lsl, width=9
+                  ).grid(row=2, column=1, padx=2, pady=1)
+        for v in (self.study_usl, self.study_lsl):
+            v.trace_add("write", lambda *_: self._study_refresh())
+
+        sm = ttk.LabelFrame(opt, text="Smoothing", padding=6)
+        sm.pack(side="left", fill="y", padx=8)
+        self.study_smooth_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sm, text="Moving average",
+                        variable=self.study_smooth_on,
+                        command=self._study_refresh).pack(anchor="w")
+        wrow = ttk.Frame(sm); wrow.pack(anchor="w", pady=(2, 0))
+        ttk.Label(wrow, text="Window:").pack(side="left")
+        self.study_window = tk.StringVar(value="5")
+        ttk.Entry(wrow, textvariable=self.study_window, width=5
+                  ).pack(side="left", padx=2)
+        self.study_window.trace_add("write", lambda *_: self._study_refresh())
+
+        ana = ttk.LabelFrame(opt, text="Analytics", padding=6)
+        ana.pack(side="left", fill="both", expand=True)
+        self.study_analytics = {}
+        for i, name in enumerate(self.STUDY_ANALYTICS):
+            var = tk.BooleanVar(value=name in ("Mean", "Std dev", "Min / Max"))
+            self.study_analytics[name] = var
+            ttk.Checkbutton(ana, text=name, variable=var,
+                            command=self._study_refresh
+                            ).grid(row=i % 3, column=i // 3, sticky="w", padx=2)
+        self.study_stats_var = tk.StringVar(value="-")
+        ttk.Label(ana, textvariable=self.study_stats_var, foreground="#036",
+                  wraplength=560, justify="left"
+                  ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    # -- study helpers ------------------------------------------------------
+    def _study_limits(self):
+        """(usl, lsl) as floats, or (None, None) when unset/not applied."""
+        if not self.study_lim_on.get():
+            return None, None
+        def num(s):
+            try:
+                return float(s.strip())
+            except ValueError:
+                return None
+        return num(self.study_usl.get()), num(self.study_lsl.get())
+
+    def _study_series(self):
+        """(label, unit, values) for the currently selected variable."""
+        key, ukey = self.STUDY_VARS[self.study_sel.get()]
+        vals = [s[key] for s in self.study_samples if s.get(key) is not None]
+        unit = ""
+        if ukey:
+            for s in reversed(self.study_samples):
+                if s.get(ukey):
+                    unit = s[ukey]
+                    break
+        elif key == "mA":
+            unit = "mA"
+        elif key == "pct":
+            unit = "%"
+        return self.study_sel.get(), unit, vals
+
+    def _study_smoothed(self, values):
+        if not (self.study_smooth_on.get() and values):
+            return None
+        try:
+            w = int(self.study_window.get())
+        except ValueError:
+            return None
+        if w < 2:
+            return None
+        return moving_average(values, w)
+
+    def _toggle_study(self):
+        if self.study_running:
+            self.study_running = False
+            self.study_btn["text"] = "Start logging"
+            return
+        if not (self.connected and self.master):
+            messagebox.showwarning("Not connected",
+                                   "Connect to a device first.\n\nNo hardware? "
+                                   "Use 'Launch fake HART' on the Connection "
+                                   "tab.")
+            return
+        self.study_running = True
+        self.study_btn["text"] = "Stop logging"
+        if self.study_t0 is None:
+            self.study_t0 = datetime.now()
+        self._study_sample()
+
+    def _study_sample(self):
+        if not (self.study_running and self.connected and self.master):
+            return
+        m = self.master
+
+        def job():
+            # one cmd 3 + one cmd 2 per sample, same as the Variables tab
+            return m.read_dynamic_variables(), m.read_current_percent()
+
+        def done(res):
+            dv, cp = res
+            now = datetime.now()
+            row = {"dt": now,
+                   "elapsed": (now - self.study_t0).total_seconds(),
+                   "mA": cp.get("loop_current_mA"),
+                   "pct": cp.get("percent_range")}
+            for k in ("pv", "sv", "tv", "qv"):
+                row[k] = dv.get(k)
+                row[k + "_unit"] = dv.get(k + "_unit", "")
+            self.study_samples.append(row)
+            self._study_refresh()
+            if self.study_running:
+                try:
+                    interval = int(self.study_int.get())
+                except ValueError:
+                    interval = 1000
+                self.after(max(200, interval), self._study_sample)
+
+        self.worker.submit(job, on_done=done, on_error=self._study_error)
+
+    def _study_error(self, err):
+        e, _tb = err
+        # transient timeouts are normal on a live loop -- keep logging
+        self.study_stats_var.set(f"sample error: {type(e).__name__}: {e}")
+        if self.study_running:
+            self.after(1000, self._study_sample)
+
+    def _study_clear(self):
+        if self.study_samples and not messagebox.askyesno(
+                "Clear", f"Discard {len(self.study_samples)} logged samples?"):
+            return
+        self.study_samples.clear()
+        self.study_t0 = datetime.now() if self.study_running else None
+        self._study_refresh()
+
+    def _study_refresh(self):
+        self.study_count.set(f"{len(self.study_samples)} samples")
+        self._study_stats_text()
+        self._study_redraw()
+
+    def _study_stats_text(self):
+        _label, unit, vals = self._study_series()
+        if not vals:
+            self.study_stats_var.set("-")
+            return
+        usl, lsl = self._study_limits()
+        st = study_stats(vals, usl, lsl)
+        on = {k: v.get() for k, v in self.study_analytics.items()}
+        u = f" {unit}" if unit else ""
+        parts = []
+        if on["Mean"]:
+            parts.append(f"Mean {st['mean']:.4g}{u}")
+        if on["Std dev"]:
+            parts.append(f"σ {st['stdev']:.4g}{u}" if st["stdev"] is not None
+                         else "σ n/a")
+        if on["Min / Max"]:
+            parts.append(f"Min {st['min']:.4g}{u}   Max {st['max']:.4g}{u}")
+        if on["Range"]:
+            parts.append(f"Range {st['range']:.4g}{u}")
+        if on["Cp / Cpk"]:
+            if "cp" in st:
+                parts.append(f"Cp {st['cp']:.3f}   Cpk {st['cpk']:.3f}")
+            else:
+                parts.append("Cp/Cpk needs both limits applied and σ > 0")
+        if on["Out-of-limit count"]:
+            if "out_of_limits" in st:
+                n = st["out_of_limits"]
+                parts.append(f"Out of limits {n} of {st['n']} "
+                             f"({100.0 * n / st['n']:.1f} %)")
+            else:
+                parts.append("Out-of-limit count needs limits applied")
+        parts.append(f"n = {st['n']}")
+        self.study_stats_var.set("     ".join(parts))
+
+    def _study_redraw(self):
+        c = getattr(self, "study_canvas", None)
+        if c is None:
+            return
+        c.delete("all")
+        W, H = c.winfo_width(), c.winfo_height()
+        if W < 80 or H < 80:
+            return
+        L, R, T, B = 64, 14, 12, 30
+        x0, y0, x1, y1 = L, T, W - R, H - B
+        c.create_rectangle(x0, y0, x1, y1, outline="#ccc")
+
+        label, unit, vals = self._study_series()
+        if not vals:
+            c.create_text((x0 + x1) / 2, (y0 + y1) / 2, fill="#999",
+                          text="No data - press Start logging")
+            return
+
+        times = [s["elapsed"] for s in self.study_samples
+                 if s.get(self.STUDY_VARS[self.study_sel.get()][0]) is not None]
+        usl, lsl = self._study_limits()
+        smooth = self._study_smoothed(vals)
+
+        lo, hi = min(vals), max(vals)
+        for lim in (usl, lsl):
+            if lim is not None:
+                lo, hi = min(lo, lim), max(hi, lim)
+        if hi - lo < 1e-9:
+            lo, hi = lo - 1.0, hi + 1.0
+        pad = (hi - lo) * 0.08
+        lo, hi = lo - pad, hi + pad
+        t_lo, t_hi = times[0], times[-1]
+        if t_hi - t_lo < 1e-9:
+            t_hi = t_lo + 1.0
+
+        def sx(t):
+            return x0 + (t - t_lo) / (t_hi - t_lo) * (x1 - x0)
+
+        def sy(v):
+            return y1 - (v - lo) / (hi - lo) * (y1 - y0)
+
+        # gridlines + y labels
+        for i in range(5):
+            v = lo + (hi - lo) * i / 4
+            y = sy(v)
+            c.create_line(x0, y, x1, y, fill="#eee")
+            c.create_text(x0 - 6, y, text=f"{v:.4g}", anchor="e",
+                          fill="#666", font=("TkDefaultFont", 9))
+        # x labels (elapsed seconds)
+        for i in range(5):
+            t = t_lo + (t_hi - t_lo) * i / 4
+            x = sx(t)
+            c.create_line(x, y0, x, y1, fill="#f4f4f4")
+            c.create_text(x, y1 + 14, text=f"{t:.1f}s", fill="#666",
+                          font=("TkDefaultFont", 9))
+
+        # long runs: stride the drawn points, the stats still use every sample
+        step = max(1, len(vals) // 2000)
+
+        def polyline(series, colour, width):
+            pts = []
+            for i in range(0, len(series), step):
+                pts += [sx(times[i]), sy(series[i])]
+            if len(pts) >= 4:
+                c.create_line(*pts, fill=colour, width=width)
+
+        polyline(vals, "#1a6fd4", 1)
+        if smooth:
+            polyline(smooth, "#e07b00", 2)
+
+        for lim, name in ((usl, "USL"), (lsl, "LSL")):
+            if lim is not None:
+                y = sy(lim)
+                c.create_line(x0, y, x1, y, fill="#c00", dash=(5, 3))
+                c.create_text(x1 - 4, y - 7, text=name, anchor="e",
+                              fill="#c00", font=("TkDefaultFont", 9))
+        if self.study_analytics["Mean"].get():
+            y = sy(statistics.fmean(vals))
+            c.create_line(x0, y, x1, y, fill="#888", dash=(2, 4))
+
+        title = f"{label}" + (f"  ({unit})" if unit else "")
+        c.create_text(x0 + 6, y0 + 8, text=title, anchor="w", fill="#333")
+        if smooth:
+            c.create_text(x1 - 4, y0 + 8, anchor="e", fill="#e07b00",
+                          text=f"moving avg n={self.study_window.get()}",
+                          font=("TkDefaultFont", 9))
+
+    @staticmethod
+    def _csvnum(v):
+        """Format a float for CSV without binary-repr noise (13.6, not
+        13.600000000000001). 7 sig figs covers IEEE-754 single, which is all
+        HART carries. Blank for missing values."""
+        if v is None:
+            return ""
+        if isinstance(v, float):
+            return f"{v:.7g}"
+        return v
+
+    def _study_export(self):
+        if not self.study_samples:
+            messagebox.showinfo("Export", "No samples logged yet.")
+            return
+        # name the file after the device tag when the Config tab has loaded one
+        tag = "".join(ch for ch in self.c_tag.get().strip()
+                      if ch.isalnum() or ch in "-_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default = f"process_study_{tag + '_' if tag else ''}{stamp}.csv"
+        path = filedialog.asksaveasfilename(
+            title="Export process study", initialfile=default,
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+
+        label, _unit, vals = self._study_series()
+        key = self.STUDY_VARS[self.study_sel.get()][0]
+        smooth = self._study_smoothed(vals)
+        usl, lsl = self._study_limits()
+
+        cols = ["timestamp", "elapsed_s", "pv", "pv_unit", "sv", "sv_unit",
+                "tv", "tv_unit", "qv", "qv_unit", "loop_current_mA",
+                "percent_range"]
+        if smooth:
+            cols.append(f"{key}_smoothed")
+        if usl is not None or lsl is not None:
+            cols.append("in_limits")
+
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                si = 0
+                num = self._csvnum
+                for s in self.study_samples:
+                    row = [format_timestamp(s["dt"]), f"{s['elapsed']:.3f}",
+                           num(s.get("pv")), s.get("pv_unit"),
+                           num(s.get("sv")), s.get("sv_unit"),
+                           num(s.get("tv")), s.get("tv_unit"),
+                           num(s.get("qv")), s.get("qv_unit"),
+                           num(s.get("mA")), num(s.get("pct"))]
+                    v = s.get(key)
+                    if smooth:
+                        row.append(num(smooth[si]) if v is not None else "")
+                    if usl is not None or lsl is not None:
+                        ok = v is not None and \
+                            not (usl is not None and v > usl) and \
+                            not (lsl is not None and v < lsl)
+                        row.append("yes" if ok else "no")
+                    if v is not None:
+                        si += 1
+                    w.writerow(row)
+        except OSError as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        messagebox.showinfo("Export",
+                            f"Wrote {len(self.study_samples)} samples to\n{path}")
 
     # ---- Config tab -------------------------------------------------------
     def _tab_config(self):
