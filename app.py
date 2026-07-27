@@ -135,7 +135,7 @@ class App(tk.Tk):
         self.connected = False
         self.polling = False
         self.fake_hart_proc: subprocess.Popen | None = None
-        self.fake_hart_link: str | None = None
+        self.fake_hart_url: str | None = None
 
         self._build_ui()
         self.after(self.POLL_MS, self._pump)
@@ -257,22 +257,53 @@ class App(tk.Tk):
                                  f"hart_emulator.py not found next to app.py:"
                                  f"\n{script}")
             return
-        # /tmp, not tempfile.gettempdir(): on macOS the latter is a long
-        # per-user /var/folders/... path that is unreadable in the port field.
-        link = "/tmp/hart-fake0"
+        # Socket mode on every platform, not just Windows. Windows has no ptys
+        # so it is the only portable option, and using it everywhere means the
+        # path Windows runs is the one actually exercised during development.
         try:
             self.fake_hart_proc = subprocess.Popen(
-                [sys.executable, script, "--link", link],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [sys.executable, script, "--socket"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
             )
         except OSError as e:
             messagebox.showerror("Fake HART", f"Could not launch emulator: {e}")
             return
-        self.fake_hart_link = link
-        self.port_var.set(link)
-        self.rts_keyed.set(False)   # no real carrier to key on a pty
+
+        # The emulator binds a free port and announces it, so we never have to
+        # guess one and race another process for it.
+        url = self._read_fake_hart_url(self.fake_hart_proc)
+        if url is None:
+            self._stop_fake_hart()
+            messagebox.showerror("Fake HART",
+                                 "Emulator started but did not report a port.")
+            return
+
+        self.fake_hart_url = url
+        self.port_var.set(url)
+        self.rts_keyed.set(False)   # nothing to key on a socket
         self.fake_hart_btn["text"] = "Stop fake HART"
-        self._set_status(f"Fake HART running at {link}", ok=True)
+        self._set_status(f"Fake HART running at {url}", ok=True)
+
+    @staticmethod
+    def _read_fake_hart_url(proc, timeout=5.0):
+        """Read the emulator's PYHART_PORT= announcement. Runs on a helper
+        thread so a wedged child can never freeze the UI."""
+        result = {}
+
+        def reader():
+            try:
+                for line in proc.stdout:
+                    if line.startswith("PYHART_PORT="):
+                        result["url"] = line.strip().split("=", 1)[1]
+                        return
+            except Exception:
+                pass
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        t.join(timeout)
+        return result.get("url")
 
     def _stop_fake_hart(self):
         if self.fake_hart_proc:
@@ -282,12 +313,7 @@ class App(tk.Tk):
             except Exception:
                 pass
             self.fake_hart_proc = None
-        if self.fake_hart_link and os.path.islink(self.fake_hart_link):
-            try:
-                os.remove(self.fake_hart_link)
-            except OSError:
-                pass
-        self.fake_hart_link = None
+        self.fake_hart_url = None
         self.fake_hart_btn["text"] = "Launch fake HART"
         if not self.connected:
             self._set_status("Disconnected")

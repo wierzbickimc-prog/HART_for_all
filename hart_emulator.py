@@ -2,15 +2,26 @@
 """
 hart_emulator.py -- fake HART transmitter for testing pyhart with no hardware.
 
-Opens a pseudo-terminal pair (stdlib `pty`, no socat/com0com needed) and holds
-the master side, speaking the real HART wire protocol back at whoever opens
-the slave side. Point pyhart's Connection tab (or `cli.py --port`) at the
-printed slave path and it behaves like a live device on the bus.
+Speaks the real HART wire protocol over one of two links:
+
+* **socket** (default, works everywhere including Windows) -- listens on TCP;
+  pyhart attaches with pyserial's ``socket://host:port`` URL.
+* **pty** (POSIX only) -- a pseudo-terminal pair, so the tool sees an actual
+  serial device node. Needs no socat/com0com.
+
+Windows has no ptys, so socket mode is the portable one and is therefore what
+the GUI's "Launch fake HART" button uses on every platform -- one code path,
+tested the same way everywhere.
 
 Usage:
-    python3 hart_emulator.py                  # default poll address 0
+    python3 hart_emulator.py                       # socket on a free port
+    python3 hart_emulator.py --socket 20515        # socket on a fixed port
+    python3 hart_emulator.py --pty --link /tmp/hart-fake0   # POSIX device node
     python3 hart_emulator.py --poll-addr 3
-    python3 hart_emulator.py --link /tmp/hart-fake0   # stable symlink to the pty
+
+It prints the port/URL to give pyhart, and writes a single machine-readable
+``PYHART_PORT=<url>`` line on stdout so a parent process can pick it up without
+guessing a free port.
 
 Only the auto-key (non-RTS) modem path is meaningful here -- there's no real
 carrier to key, so leave "RTS-keyed modem" unticked in pyhart when testing
@@ -25,10 +36,15 @@ from __future__ import annotations
 import argparse
 import math
 import os
-import pty
+import socket
 import sys
 import time
 from typing import Optional
+
+try:                      # POSIX only; absent on Windows
+    import pty
+except ImportError:       # pragma: no cover
+    pty = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hart import frame as F
@@ -273,13 +289,16 @@ def build_ack(long_frame: bool, address: bytes, command: int,
     return bytes([F.PREAMBLE] * preambles) + body + bytes([F.checksum(body)])
 
 
-def run(port_fd: int, device: FakeDevice, verbose: bool = True):
+def run(link, device: FakeDevice, verbose: bool = True):
     buf = bytearray()
     while True:
         try:
-            chunk = os.read(port_fd, 256)
+            chunk = link.read(256)
         except OSError:
             break
+        if chunk is None:        # peer went away; wait for the next one
+            buf.clear()
+            continue
         if not chunk:
             continue
         buf += chunk
@@ -302,7 +321,104 @@ def run(port_fd: int, device: FakeDevice, verbose: bool = True):
                 kind = "long" if long_frame else "short"
                 print(f"  cmd {command:3d} ({kind}) <- {data.hex() or '(none)'}   "
                       f"-> rc={rc} data={payload.hex() or '(none)'}")
-            os.write(port_fd, resp)
+            link.write(resp)
+
+
+# --------------------------------------------------------------------------
+# Links. Both expose read(n) -> bytes | None and write(bytes); None from read
+# means "the peer disconnected", which only the socket link can report.
+# --------------------------------------------------------------------------
+class PtyLink:
+    """POSIX pseudo-terminal: pyhart sees a real serial device node."""
+
+    def __init__(self, link_path: Optional[str] = None):
+        if pty is None:
+            raise RuntimeError("pty mode needs POSIX; use socket mode instead")
+        self.master_fd, slave_fd = pty.openpty()
+        self.path = os.ttyname(slave_fd)
+        self.link_path = link_path
+        if link_path:
+            try:
+                if os.path.islink(link_path) or os.path.exists(link_path):
+                    os.remove(link_path)
+                os.symlink(self.path, link_path)
+            except OSError as e:
+                print(f"warning: could not create symlink {link_path}: {e}",
+                      file=sys.stderr)
+                self.link_path = None
+
+    @property
+    def url(self) -> str:
+        return self.link_path or self.path
+
+    def read(self, n):
+        return os.read(self.master_fd, n)
+
+    def write(self, data):
+        os.write(self.master_fd, data)
+
+    def close(self):
+        os.close(self.master_fd)
+        if self.link_path and os.path.islink(self.link_path):
+            try:
+                os.remove(self.link_path)
+            except OSError:
+                pass
+
+
+class SocketLink:
+    """TCP link. Works on every platform -- this is the Windows answer, since
+    Windows has no ptys. pyhart attaches via pyserial's socket:// URL handler.
+    Serves one client at a time and accepts a fresh one after a disconnect, so
+    you can connect/disconnect in the GUI repeatedly."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind((host, port))
+        self.srv.listen(1)
+        self.host, self.port = self.srv.getsockname()
+        self.conn: Optional[socket.socket] = None
+
+    @property
+    def url(self) -> str:
+        return f"socket://{self.host}:{self.port}"
+
+    def _accept(self):
+        self.conn, _peer = self.srv.accept()
+        self.conn.settimeout(0.2)
+
+    def read(self, n):
+        if self.conn is None:
+            self._accept()
+        try:
+            data = self.conn.recv(n)
+        except socket.timeout:
+            return b""
+        except OSError:
+            data = b""
+        if not data:                      # peer closed
+            try:
+                self.conn.close()
+            finally:
+                self.conn = None
+            return None
+        return data
+
+    def write(self, data):
+        if self.conn is not None:
+            try:
+                self.conn.sendall(data)
+            except OSError:
+                self.conn = None
+
+    def close(self):
+        for s in (self.conn, self.srv):
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
 
 
 def main():
@@ -310,42 +426,60 @@ def main():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--poll-addr", type=int, default=0,
                      help="poll address this fake device answers at during scan (default 0)")
+    ap.add_argument("--socket", nargs="?", const=0, type=int, default=None,
+                     metavar="PORT",
+                     help="TCP mode (default). Omit PORT or pass 0 for a free "
+                          "one. Attach with socket://127.0.0.1:PORT")
+    ap.add_argument("--host", default="127.0.0.1",
+                     help="bind address for socket mode (default 127.0.0.1)")
+    ap.add_argument("--pty", action="store_true",
+                     help="POSIX only: serve on a pseudo-terminal so pyhart "
+                          "sees a real device node")
     ap.add_argument("--link", default=None,
-                     help="create/refresh a stable symlink to the pty slave path")
+                     help="pty mode: create/refresh a stable symlink to the "
+                          "pty slave path (implies --pty)")
     args = ap.parse_args()
 
-    master_fd, slave_fd = pty.openpty()
-    slave_path = os.ttyname(slave_fd)
+    use_pty = args.pty or args.link is not None
+    if use_pty and pty is None:
+        ap.error("--pty/--link need POSIX ptys, which this platform lacks; "
+                 "use socket mode (the default) instead")
 
-    if args.link:
+    if use_pty:
+        link = PtyLink(args.link)
+        mode = "pty"
+    else:
         try:
-            if os.path.islink(args.link) or os.path.exists(args.link):
-                os.remove(args.link)
-            os.symlink(slave_path, args.link)
+            link = SocketLink(args.host, args.socket or 0)
         except OSError as e:
-            print(f"warning: could not create symlink {args.link}: {e}", file=sys.stderr)
+            print(f"could not listen on {args.host}:{args.socket}: {e}",
+                  file=sys.stderr)
+            return 1
+        mode = "socket"
 
     device = FakeDevice(poll_addr=args.poll_addr)
 
     print("pyhart fake device emulator")
-    print(f"  slave port : {slave_path}")
-    if args.link:
-        print(f"  stable link: {args.link}  (use this as --port / in the GUI port list)")
+    print(f"  mode       : {mode}")
+    print(f"  attach with: {link.url}")
+    if mode == "pty" and link.link_path:
+        print(f"  pty device : {link.path}")
     print(f"  poll addr  : {device.poll_addr}")
     print(f"  tag        : {device.tag}")
-    print("  In pyhart, leave 'RTS-keyed modem' UNTICKED (auto-key) -- there is no")
-    print("  real carrier to key on a pty.")
-    print("  Ctrl-C to stop.\n")
+    print("  In pyhart, leave 'RTS-keyed modem' UNTICKED (auto-key) -- there is")
+    print("  no real carrier to key here.")
+    print("  Ctrl-C to stop.")
+    # machine-readable line so a parent process needn't guess a free port
+    print(f"PYHART_PORT={link.url}", flush=True)
 
     try:
-        run(master_fd, device)
+        run(link, device)
     except KeyboardInterrupt:
         pass
     finally:
-        os.close(master_fd)
-        if args.link and os.path.islink(args.link):
-            os.remove(args.link)
+        link.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

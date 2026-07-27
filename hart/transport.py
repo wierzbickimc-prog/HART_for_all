@@ -83,19 +83,26 @@ class HartTransport:
 
     # -- lifecycle -----------------------------------------------------------
     def open(self):
-        self.ser = serial.Serial(
-            port=self.cfg.port,
-            baudrate=BAUD,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_ODD,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=self.cfg.inter_char_timeout_ms / 1000.0,
-            write_timeout=2.0,
-            rtscts=False,
-            dsrdtr=False,
-        )
-        # idle line state
-        self._set_key(False)
+        # serial_for_url() rather than Serial(): a plain device path
+        # (/dev/cu.usbserial-X, COM3) still gives an ordinary serial port, but
+        # pyserial URLs also work -- notably socket://host:port, which is how
+        # the fake-device emulator attaches on Windows, where there are no ptys.
+        self.ser = serial.serial_for_url(self.cfg.port, do_not_open=True)
+        self.ser.baudrate = BAUD
+        self.ser.bytesize = serial.EIGHTBITS
+        self.ser.parity = serial.PARITY_ODD
+        self.ser.stopbits = serial.STOPBITS_ONE
+        self.ser.timeout = self.cfg.inter_char_timeout_ms / 1000.0
+        self.ser.write_timeout = 2.0
+        self.ser.rtscts = False
+        self.ser.dsrdtr = False
+        self.ser.open()
+        # idle line state. Handshake lines don't exist on socket:// and some
+        # URL handlers raise rather than ignore, so both are best-effort.
+        try:
+            self._set_key(False)
+        except Exception:
+            pass
         try:
             self.ser.dtr = bool(self.cfg.dtr_active)
         except Exception:
@@ -121,7 +128,11 @@ class HartTransport:
         if not self.cfg.rts_keyed or self.ser is None:
             return
         level = keyed if self.cfg.rts_active_high else (not keyed)
-        self.ser.rts = level
+        try:
+            self.ser.rts = level
+        except Exception:
+            # no real handshake line (socket:// and friends) -- nothing to key
+            pass
 
     # -- transaction ---------------------------------------------------------
     def transaction(self, request: bytes) -> Optional[F.HartResponse]:

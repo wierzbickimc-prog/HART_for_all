@@ -4,11 +4,15 @@ pyhart CLI - headless bring-up and scripting for the same HART core.
 
 Examples:
     python3 cli.py ports
-    python3 cli.py scan  --port /dev/ttyUSB0
-    python3 cli.py scan  --port /dev/cu.SLAB_USBtoUART --rts
+    python3 cli.py scan  --port /dev/ttyUSB0              # Linux
+    python3 cli.py scan  --port /dev/cu.SLAB_USBtoUART --rts   # macOS
+    python3 cli.py scan  --port COM3                      # Windows
     python3 cli.py info  --port /dev/ttyUSB0
     python3 cli.py read  --port /dev/ttyUSB0
     python3 cli.py config --port /dev/ttyUSB0
+
+--port also accepts pyserial URLs, e.g. socket://127.0.0.1:20515 to talk to
+hart_emulator.py without any hardware.
 
 Use --rts if you get no reply on an auto-key attempt (budget CP2102 modems are
 often RTS-keyed). --rts-low flips the keying polarity.

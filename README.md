@@ -1,7 +1,7 @@
-# HART_for_all (pyhart) — native macOS / Ubuntu HART configurator
+# HART_for_all (pyhart) — native macOS / Ubuntu / Windows HART configurator
 
-Basic HART communication on macOS (Apple Silicon and Intel) and Ubuntu using a
-cheap Amazon HART modem.
+Basic HART communication on macOS (Apple Silicon and Intel), Ubuntu and Windows
+using a cheap Amazon HART modem.
 
 A lightweight, PACTware-style HART master for USB HART modems that enumerate as
 a serial port (the Devonian modem is **CP2102**-based). No DTMs, no Windows VM.
@@ -26,6 +26,7 @@ wizards) — those live in device descriptions and are out of scope here.
 - `app.py` — the Tkinter GUI (tabs: Connection, Variables, Process Study,
   Config, Ranging, Calibration, Device Profile, Diagnostics/Trace)
 - `hart_emulator.py` — fake HART device for testing without hardware
+  (socket link on all platforms, pty link on POSIX)
 - `cli.py` — headless equivalent for bring-up / scripting
 - `tests/test_frame.py` — offline correctness tests (no hardware needed)
 
@@ -59,6 +60,19 @@ install Silicon Labs' **CP210x VCP** driver, then re-plug.
 > On macOS always use the **`/dev/cu.*`** device, not `/dev/tty.*`. The tool's
 > port list already de-prioritises `tty.*` for you.
 
+### Windows
+```bat
+py -m pip install pyserial
+```
+Tkinter ships with the python.org installer (Tk 8.6, so no blank-window issue).
+Install Silicon Labs' **CP210x VCP** driver if the modem doesn't appear, then
+use the `COMn` name — `py cli.py scan --port COM3`. Ports numbered COM10 and
+above are handled for you.
+
+Serial latency is less predictable on Windows than on macOS/Linux. If replies
+are intermittent, raise **Resp timeout** and nudge **TX tail** up before
+assuming a wiring problem.
+
 ---
 
 ## Run
@@ -78,22 +92,32 @@ Typical first connect:
 ## Testing with no hardware (fake HART device)
 
 `hart_emulator.py` simulates a HART transmitter so you can exercise the whole
-tool with no modem and no loop. It opens a pseudo-terminal pair (stdlib `pty` —
-no socat/com0com) and speaks real HART wire framing on it.
+tool with no modem and no loop, on any platform.
 
 Easiest path: the **Launch fake HART** button on the Connection tab. It starts
 the emulator, fills in the port, and turns into **Stop fake HART**.
 
 Standalone:
 ```bash
-python3 hart_emulator.py --link /tmp/hart-fake0
-python3 cli.py scan --port /tmp/hart-fake0
+python3 hart_emulator.py                  # prints a socket:// URL to use
+python3 cli.py scan --port socket://127.0.0.1:20515
 ```
+
+Two link types:
+
+- **socket** (default, all platforms) — listens on TCP; pyhart attaches with
+  pyserial's `socket://host:port` URL. Pass `--socket PORT` to pin the port,
+  otherwise a free one is chosen and announced. This is the only option on
+  Windows, which has no ptys, so the GUI button uses it *everywhere* — that
+  way the path Windows runs is the one exercised in daily development.
+- **pty** (`--pty`, POSIX only) — a pseudo-terminal, so the tool sees a real
+  device node. `--link /tmp/hart-fake0` adds a stable symlink. Useful when you
+  want to test the genuine serial-device code path.
 
 It answers at poll address 0 (`--poll-addr` to change), reports itself as
 manufacturer 17 / device type 0x86 / id 43981, and keeps live state — writes to
-tag, range, damping etc. persist and read back. Leave **RTS-keyed modem**
-unticked: a pty has no carrier to key.
+tag, range, damping etc. persist and read back, including across a reconnect.
+Leave **RTS-keyed modem** unticked: neither link has a carrier to key.
 
 ---
 
@@ -207,7 +231,10 @@ Every write in the GUI asks for confirmation first.
 python3 tests/test_frame.py
 python3 tests/test_profile.py
 python3 tests/test_study.py
+python3 tests/test_emulator.py
 ```
+`test_emulator.py` drives a real HART session over the socket link, so running
+it on Windows verifies the same path the fake-HART button uses there.
 Verifies checksum, short/long frame build, long-address derivation from a
 Command-0 reply, response parsing (incl. bad-checksum detection), and the
 Packed-ASCII / float / date codecs against hand-computed vectors — all without
