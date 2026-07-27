@@ -131,7 +131,7 @@ class App(tk.Tk):
         self.worker.start()
 
         self.transport: HartTransport | None = None
-        self.master: HartMaster | None = None
+        self.hart: HartMaster | None = None
         self.connected = False
         self.polling = False
         self.fake_hart_proc: subprocess.Popen | None = None
@@ -364,7 +364,7 @@ class App(tk.Tk):
                            on_error=self._connect_error)
 
     def _connect_done(self, res):
-        self.transport, self.master, ident = res
+        self.transport, self.hart, ident = res
         self.connected = True
         self._set_status("Connected", ok=True)
         self.connect_btn["state"] = "disabled"
@@ -376,7 +376,7 @@ class App(tk.Tk):
         self._read_ranging_all()
 
     def _connect_error(self, err):
-        self.transport = self.master = None
+        self.transport = self.hart = None
         self.connected = False
         self._set_status("Disconnected")
         e, tb = err
@@ -393,8 +393,8 @@ class App(tk.Tk):
         if self.study_running:          # keep the samples, just stop sampling
             self.study_running = False
             self.study_btn["text"] = "Start logging"
-        m, t = self.master, self.transport
-        self.master = self.transport = None
+        m, t = self.hart, self.transport
+        self.hart = self.transport = None
         self.connected = False
 
         def job():
@@ -419,8 +419,8 @@ class App(tk.Tk):
         self.id_hart.set(str(ident.get("hart_revision", "-")))
         self.id_rev.set(f"{ident.get('device_revision','-')} / "
                         f"{ident.get('software_revision','-')}")
-        if self.master and self.master.address:
-            self.id_addr.set(self.master.address.hex(" "))
+        if self.hart and self.hart.address:
+            self.id_addr.set(self.hart.address.hex(" "))
         tag = ""
         self.ident_var.set(f"HART {ident.get('hart_revision','?')}  "
                            f"dev 0x{ident.get('device_type_code',0):02X}  "
@@ -463,9 +463,9 @@ class App(tk.Tk):
             self._poll_once(loop=True)
 
     def _poll_once(self, loop=False):
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             return
-        m = self.master
+        m = self.hart
 
         def job():
             dv = m.read_dynamic_variables()
@@ -645,7 +645,7 @@ class App(tk.Tk):
             self.study_running = False
             self.study_btn["text"] = "Start logging"
             return
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             messagebox.showwarning("Not connected",
                                    "Connect to a device first.\n\nNo hardware? "
                                    "Use 'Launch fake HART' on the Connection "
@@ -658,9 +658,9 @@ class App(tk.Tk):
         self._study_sample()
 
     def _study_sample(self):
-        if not (self.study_running and self.connected and self.master):
+        if not (self.study_running and self.connected and self.hart):
             return
-        m = self.master
+        m = self.hart
 
         def job():
             # one cmd 3 + one cmd 2 per sample, same as the Variables tab
@@ -923,9 +923,9 @@ class App(tk.Tk):
                    command=self._write_ltag).pack(side="left", padx=6)
 
     def _read_config_all(self):
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             return
-        m = self.master
+        m = self.hart
 
         def job():
             out = {}
@@ -949,7 +949,7 @@ class App(tk.Tk):
 
     def _write_tdd(self):
         if not self._guard(): return
-        m = self.master
+        m = self.hart
         tag = self.c_tag.get(); desc = self.c_desc.get()
         try:
             y, mo, d = [int(x) for x in self.c_date.get().split("-")]
@@ -963,14 +963,14 @@ class App(tk.Tk):
 
     def _write_msg(self):
         if not self._guard(): return
-        m = self.master; msg = self.c_msg.get()
+        m = self.hart; msg = self.c_msg.get()
         self._confirm_write(f"Write message '{msg}'?",
                             lambda: m.write_message(msg),
                             after=self._read_config_all)
 
     def _write_ltag(self):
         if not self._guard(): return
-        m = self.master; lt = self.c_ltag.get()
+        m = self.hart; lt = self.c_ltag.get()
         self._confirm_write(f"Write long tag '{lt}'?",
                             lambda: m.write_long_tag(lt),
                             after=self._read_config_all)
@@ -1015,20 +1015,20 @@ class App(tk.Tk):
         ttk.Button(setr, text="Set LRV = input (cmd 37)",
                    command=lambda: self._simple_write(
                        "Set LRV to present applied input?",
-                       lambda: self.master.set_lrv_at_input())
+                       lambda: self.hart.set_lrv_at_input())
                    ).pack(side="left")
         ttk.Button(setr, text="Set URV = input (cmd 36)",
                    command=lambda: self._simple_write(
                        "Set URV to present applied input?",
-                       lambda: self.master.set_urv_at_input())
+                       lambda: self.hart.set_urv_at_input())
                    ).pack(side="left", padx=6)
         ttk.Button(f, text="Read all",
                    command=self._read_ranging_all).pack(anchor="w", pady=4)
 
     def _read_ranging_all(self):
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             return
-        m = self.master
+        m = self.hart
 
         def job():
             out = m.read_pv_output_info()
@@ -1073,7 +1073,7 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showwarning("Range", "LRV and URV must be numbers.")
             return
-        m = self.master
+        m = self.hart
         self._confirm_write(
             f"Write range  LRV={lrv}  URV={urv}  unit code {code}?",
             lambda: m.write_range(code, urv, lrv),
@@ -1086,7 +1086,7 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showwarning("Damping", "Damping must be a number.")
             return
-        m = self.master
+        m = self.hart
         self._confirm_write(f"Write damping {val} s?",
                             lambda: m.write_damping(val),
                             after=self._read_ranging_all)
@@ -1109,13 +1109,13 @@ class App(tk.Tk):
         ttk.Button(lt, text="Set fixed",
                    command=lambda: self._simple_write(
                        f"Force loop current to {self.lt_ma.get()} mA?",
-                       lambda: self.master.loop_current_mode(
+                       lambda: self.hart.loop_current_mode(
                            float(self.lt_ma.get())))
                    ).grid(row=0, column=2, padx=6)
         ttk.Button(lt, text="Exit to auto (0)",
                    command=lambda: self._simple_write(
                        "Return loop current to automatic control?",
-                       lambda: self.master.loop_current_mode(0.0))
+                       lambda: self.hart.loop_current_mode(0.0))
                    ).grid(row=0, column=3, padx=6)
 
         dac = ttk.LabelFrame(f, text="D/A trim (cmd 45 / 46)", padding=8)
@@ -1125,7 +1125,7 @@ class App(tk.Tk):
                    command=lambda: self._simple_write(
                        f"Trim 4 mA point using measured "
                        f"{self.trim_zero.get()} mA?",
-                       lambda: self.master.trim_loop_current_zero(
+                       lambda: self.hart.trim_loop_current_zero(
                            float(self.trim_zero.get())))
                    ).grid(row=0, column=2, padx=6)
         self.trim_gain, _ = self._labeled(dac, "Meter reads @20mA:", 10, 1, 0)
@@ -1133,7 +1133,7 @@ class App(tk.Tk):
                    command=lambda: self._simple_write(
                        f"Trim 20 mA point using measured "
                        f"{self.trim_gain.get()} mA?",
-                       lambda: self.master.trim_loop_current_gain(
+                       lambda: self.hart.trim_loop_current_gain(
                            float(self.trim_gain.get())))
                    ).grid(row=1, column=2, padx=6)
 
@@ -1142,16 +1142,16 @@ class App(tk.Tk):
         ttk.Button(misc, text="Set PV zero (cmd 43)",
                    command=lambda: self._simple_write(
                        "Zero the PV at the present applied input?",
-                       lambda: self.master.set_pv_zero())).pack(side="left")
+                       lambda: self.hart.set_pv_zero())).pack(side="left")
         ttk.Button(misc, text="Reset config-changed flag (cmd 38)",
                    command=lambda: self._simple_write(
                        "Reset the configuration-changed flag?",
-                       lambda: self.master.reset_config_changed_flag())
+                       lambda: self.hart.reset_config_changed_flag())
                    ).pack(side="left", padx=6)
         ttk.Button(misc, text="Device reset (cmd 42)",
                    command=lambda: self._simple_write(
                        "Issue a device reset? The device will restart.",
-                       lambda: self.master.device_reset())).pack(side="left")
+                       lambda: self.hart.device_reset())).pack(side="left")
 
     # ---- Device Profile tab (mini-DD engine) ------------------------------
     def _tab_profile(self):
@@ -1205,8 +1205,8 @@ class App(tk.Tk):
             return
         self.prof = prof
         self.prof_name.set(prof.name)
-        if self.connected and self.master and self.master.identity:
-            if not prof.matches(self.master.identity):
+        if self.connected and self.hart and self.hart.identity:
+            if not prof.matches(self.hart.identity):
                 messagebox.showwarning(
                     "Profile mismatch",
                     "This profile declares a manufacturer/device type that "
@@ -1262,7 +1262,7 @@ class App(tk.Tk):
     def _prof_read_all(self):
         if not (self._guard() and self.prof):
             return
-        m, prof = self.master, self.prof
+        m, prof = self.hart, self.prof
         self._set_status("Reading profile...", busy=True)
 
         def done(vals):
@@ -1286,7 +1286,7 @@ class App(tk.Tk):
         except (ValueError, ProfileError) as e:
             messagebox.showwarning("Value", f"Cannot parse value: {e}")
             return
-        m, prof = self.master, self.prof
+        m, prof = self.hart, self.prof
         self._confirm_write(
             f"Write {fs.label} = {var.get()} to the device?",
             lambda: prof.write_field(m, fid, value),
@@ -1331,9 +1331,9 @@ class App(tk.Tk):
         self.diag_txt["yscrollcommand"] = yscroll.set
 
     def _read_status48(self):
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             return
-        m = self.master
+        m = self.hart
         self.worker.submit(m.read_additional_status,
                            on_done=self._show_status48,
                            on_error=self._op_error)
@@ -1347,7 +1347,7 @@ class App(tk.Tk):
         except ValueError as e:
             messagebox.showwarning("Console", f"Bad command/hex: {e}")
             return
-        m = self.master
+        m = self.hart
         if cmd >= 128 or data:
             if not messagebox.askyesno(
                     "Confirm",
@@ -1401,7 +1401,7 @@ class App(tk.Tk):
                         else "disabled")
 
     def _guard(self):
-        if not (self.connected and self.master):
+        if not (self.connected and self.hart):
             messagebox.showwarning("Not connected", "Connect to a device first.")
             return False
         return True

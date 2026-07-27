@@ -138,6 +138,60 @@ def statistics_stdev(vals):
     return statistics.stdev(vals)
 
 
+# --- GUI regression ---------------------------------------------------------
+def test_app_does_not_shadow_tk_master():
+    """App subclasses tk.Tk, so `self.master` belongs to Tk: it is the parent
+    link Tk walks in _root(). Storing the HartMaster there used to crash the
+    whole GUI the moment any event needed the root widget while connected --
+    e.g. the <Configure> fired by first selecting the Process Study tab. The
+    HART master must live under a different name.
+
+    Skipped when no display is available.
+    """
+    import app as A
+    try:
+        gui = A.App()
+    except Exception as e:                       # no display / no Tk
+        print(f"  skip Tk master-shadowing check ({type(e).__name__})")
+        return
+
+    # Deliberately goes through the real _connect_done() rather than setting
+    # the attribute by name -- naming the attribute here would make the test
+    # pass against the very bug it exists to catch.
+    class _FakeMaster:
+        """Stands in for HartMaster. Like the real one it has no `.master`,
+        so a Tk root-walk that lands on it raises AttributeError."""
+        def __init__(self):
+            self.address = b"\x91\x86\x00\xab\xcd"
+            self.identity = {}
+
+    A.messagebox.showerror = lambda *a, **k: None
+    A.messagebox.showinfo = lambda *a, **k: None
+    try:
+        gui.withdraw()
+        gui._connect_done((None, _FakeMaster(), {"hart_revision": 7,
+                                                 "device_type_code": 0x86,
+                                                 "device_id": 43981,
+                                                 "manufacturer_code": 17}))
+        for i, tab in enumerate(gui.nb.tabs()):
+            if gui.nb.tab(tab, "text") == "Process Study":
+                gui.nb.select(i)
+                break
+        gui.update()
+        gui.update_idletasks()
+        gui._root()          # this is what raised AttributeError before
+        check("selecting Process Study while connected does not crash", True)
+    except Exception as e:
+        check(f"selecting Process Study while connected does not crash "
+              f"({type(e).__name__}: {e})", False)
+    finally:
+        try:
+            gui.worker.stop()
+            gui.destroy()
+        except Exception:
+            pass
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
