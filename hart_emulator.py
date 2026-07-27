@@ -377,23 +377,39 @@ class SocketLink:
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind((host, port))
         self.srv.listen(1)
+        # Time out accept()/recv() rather than blocking forever: closing a
+        # socket that another thread is parked in accept() on does not reliably
+        # wake it, and run() is served from a background thread when the GUI
+        # hosts the emulator in-process.
+        self.srv.settimeout(0.2)
         self.host, self.port = self.srv.getsockname()
         self.conn: Optional[socket.socket] = None
+        self.closed = False
 
     @property
     def url(self) -> str:
         return f"socket://{self.host}:{self.port}"
 
     def _accept(self):
-        self.conn, _peer = self.srv.accept()
-        self.conn.settimeout(0.2)
+        try:
+            self.conn, _peer = self.srv.accept()
+            self.conn.settimeout(0.2)
+        except (socket.timeout, TimeoutError):
+            pass                          # nobody waiting yet
+        except OSError:
+            if not self.closed:
+                raise                     # a real error, not our own shutdown
 
     def read(self, n):
+        if self.closed:
+            raise OSError("link closed")  # run() treats this as "stop"
         if self.conn is None:
             self._accept()
+            if self.conn is None:
+                return b""
         try:
             data = self.conn.recv(n)
-        except socket.timeout:
+        except (socket.timeout, TimeoutError):
             return b""
         except OSError:
             data = b""
@@ -413,12 +429,14 @@ class SocketLink:
                 self.conn = None
 
     def close(self):
+        self.closed = True
         for s in (self.conn, self.srv):
             if s is not None:
                 try:
                     s.close()
                 except OSError:
                     pass
+        self.conn = None
 
 
 def main():

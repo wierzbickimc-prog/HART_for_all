@@ -15,8 +15,6 @@ import csv
 import math
 import queue
 import statistics
-import subprocess
-import sys
 import threading
 import traceback
 import os
@@ -134,8 +132,8 @@ class App(tk.Tk):
         self.hart: HartMaster | None = None
         self.connected = False
         self.polling = False
-        self.fake_hart_proc: subprocess.Popen | None = None
-        self.fake_hart_url: str | None = None
+        self.fake_hart_link = None          # emulator SocketLink, if running
+        self.fake_hart_thread: threading.Thread | None = None
 
         self._build_ui()
         self.after(self.POLL_MS, self._pump)
@@ -243,77 +241,60 @@ class App(tk.Tk):
         self.port_cb["values"] = list_serial_ports()
 
     # ---- fake HART emulator (no hardware needed) --------------------------
+    # Hosted in-process on a daemon thread rather than spawned as a child.
+    # Bundlers (PyInstaller/py2app) set sys.executable to the packaged app, so
+    # the old subprocess launch would have started a second copy of the whole
+    # GUI instead of the emulator. In-process also removes the port handshake:
+    # we hold the SocketLink, so we simply read the port off it.
     def _toggle_fake_hart(self):
-        if self.fake_hart_proc and self.fake_hart_proc.poll() is None:
+        if self.fake_hart_link is not None:
             self._stop_fake_hart()
         else:
             self._start_fake_hart()
 
     def _start_fake_hart(self):
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "hart_emulator.py")
-        if not os.path.exists(script):
+        try:
+            import hart_emulator as E
+        except Exception as e:
             messagebox.showerror("Fake HART",
-                                 f"hart_emulator.py not found next to app.py:"
-                                 f"\n{script}")
+                                 f"Could not load hart_emulator.py:\n"
+                                 f"{type(e).__name__}: {e}")
             return
-        # Socket mode on every platform, not just Windows. Windows has no ptys
+        # Socket link on every platform, not just Windows. Windows has no ptys
         # so it is the only portable option, and using it everywhere means the
         # path Windows runs is the one actually exercised during development.
         try:
-            self.fake_hart_proc = subprocess.Popen(
-                [sys.executable, script, "--socket"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
+            link = E.SocketLink("127.0.0.1", 0)   # 0 = let the OS pick a port
         except OSError as e:
-            messagebox.showerror("Fake HART", f"Could not launch emulator: {e}")
-            return
-
-        # The emulator binds a free port and announces it, so we never have to
-        # guess one and race another process for it.
-        url = self._read_fake_hart_url(self.fake_hart_proc)
-        if url is None:
-            self._stop_fake_hart()
             messagebox.showerror("Fake HART",
-                                 "Emulator started but did not report a port.")
+                                 f"Could not open a local socket: {e}")
             return
 
-        self.fake_hart_url = url
-        self.port_var.set(url)
+        device = E.FakeDevice(poll_addr=0)
+
+        def serve():
+            try:
+                E.run(link, device, verbose=False)
+            except Exception:
+                pass          # link closed, or the GUI is going away
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+
+        self.fake_hart_link = link
+        self.fake_hart_thread = thread
+        self.port_var.set(link.url)
         self.rts_keyed.set(False)   # nothing to key on a socket
         self.fake_hart_btn["text"] = "Stop fake HART"
-        self._set_status(f"Fake HART running at {url}", ok=True)
-
-    @staticmethod
-    def _read_fake_hart_url(proc, timeout=5.0):
-        """Read the emulator's PYHART_PORT= announcement. Runs on a helper
-        thread so a wedged child can never freeze the UI."""
-        result = {}
-
-        def reader():
-            try:
-                for line in proc.stdout:
-                    if line.startswith("PYHART_PORT="):
-                        result["url"] = line.strip().split("=", 1)[1]
-                        return
-            except Exception:
-                pass
-
-        t = threading.Thread(target=reader, daemon=True)
-        t.start()
-        t.join(timeout)
-        return result.get("url")
+        self._set_status(f"Fake HART running at {link.url}", ok=True)
 
     def _stop_fake_hart(self):
-        if self.fake_hart_proc:
-            try:
-                self.fake_hart_proc.terminate()
-                self.fake_hart_proc.wait(timeout=2)
-            except Exception:
-                pass
-            self.fake_hart_proc = None
-        self.fake_hart_url = None
+        link, self.fake_hart_link = self.fake_hart_link, None
+        if link is not None:
+            link.close()            # makes the serve thread's read() raise
+        thread, self.fake_hart_thread = self.fake_hart_thread, None
+        if thread is not None:
+            thread.join(timeout=1.0)
         self.fake_hart_btn["text"] = "Launch fake HART"
         if not self.connected:
             self._set_status("Disconnected")

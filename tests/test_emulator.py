@@ -94,6 +94,31 @@ def main():
     finally:
         link.close()
 
+    # The GUI hosts the emulator on a daemon thread and stops it by closing the
+    # link, so run() must exit promptly and quietly rather than parking forever
+    # in accept() or dying with a traceback on the thread.
+    server.join(timeout=3.0)
+    check("run() exits after the link is closed", not server.is_alive())
+
+    # ... and starting a second one afterwards must work (Stop then Launch).
+    link2 = E.SocketLink("127.0.0.1", 0)
+    t2 = threading.Thread(target=E.run, args=(link2, E.FakeDevice()),
+                          kwargs={"verbose": False}, daemon=True)
+    t2.start()
+    try:
+        t = HartTransport(TransportConfig(port=link2.url,
+                                          response_timeout_ms=1500))
+        t.open()
+        try:
+            check("a second emulator can be started after stopping the first",
+                  HartMaster(t).connect(0)["device_id"] == 43981)
+        finally:
+            t.close()
+    finally:
+        link2.close()
+        t2.join(timeout=3.0)
+    check("second run() also exits cleanly", not t2.is_alive())
+
     if FAILED:
         print(f"\n{len(FAILED)} failed: {', '.join(FAILED)}")
         sys.exit(1)

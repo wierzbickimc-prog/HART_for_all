@@ -117,7 +117,11 @@ Typical first connect:
 tool with no modem and no loop, on any platform.
 
 Easiest path: the **Launch fake HART** button on the Connection tab. It starts
-the emulator, fills in the port, and turns into **Stop fake HART**.
+the emulator, fills in the port, and turns into **Stop fake HART**. The GUI
+hosts it in-process on a daemon thread rather than spawning a child, so there
+is no stray process to clean up if the app exits unexpectedly — and it keeps
+working if the app is ever bundled with PyInstaller/py2app, where
+`sys.executable` is the packaged app rather than a Python interpreter.
 
 Standalone:
 ```bash
