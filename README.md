@@ -48,12 +48,31 @@ sudo for the port:
 sudo usermod -aG dialout $USER   # then log out / back in
 ```
 
-### macOS (Intel)
+### macOS (Apple Silicon and Intel)
+
+Everything here is pure Python — there is no separate Apple Silicon build, and
+pyserial installs as native arm64. The one thing that does matter is **which
+Python you run the GUI on**.
+
+Do *not* just `pip install pyserial` against the system `python3`. Apple's
+Command Line Tools build ships **Tk 8.5**, whose Aqua repaint bug opens the GUI
+as a blank white window with no tabs. Use a Python with **Tk 8.6**:
+
 ```bash
-python3 -m pip install pyserial
+brew install python-tk@3.11              # brings python@3.11 + tcl-tk 8.6
+/opt/homebrew/bin/python3.11 -m venv .venv     # /usr/local on Intel
+.venv/bin/pip install pyserial
+.venv/bin/python app.py
 ```
-Tkinter ships with the python.org build and with Homebrew's `python-tk`. Recent
-macOS has an in-box CP210x driver — the modem shows up as
+
+Check what you have with:
+```bash
+.venv/bin/python -c "import tkinter; print(tkinter.TkVersion)"   # want 8.6
+```
+The python.org installer also ships Tk 8.6 and works equally well. The CLI and
+the tests don't care — only the GUI is affected.
+
+Recent macOS has an in-box CP210x driver — the modem shows up as
 `/dev/cu.SLAB_USBtoUART` or `/dev/cu.usbserial-XXXX`. If it doesn't appear,
 install Silicon Labs' **CP210x VCP** driver, then re-plug.
 
@@ -78,9 +97,12 @@ assuming a wiring problem.
 ## Run
 
 ```bash
-python3 app.py          # GUI
-python3 cli.py ports    # list serial ports
+.venv/bin/python app.py          # GUI
+.venv/bin/python cli.py ports    # list serial ports
 ```
+Or `source .venv/bin/activate` once, then plain `python app.py`. On macOS run
+the GUI from the venv, not the system `python3` — see
+[Install → macOS](#macos-apple-silicon-and-intel).
 
 Typical first connect:
 1. **Connection** tab → pick the port → **Scan bus (0-15)**.
@@ -123,15 +145,13 @@ Leave **RTS-keyed modem** unticked: neither link has a carrier to key.
 
 ## macOS: blank window / no tabs
 
-If the GUI opens as an empty white window, you're on Apple's Command Line Tools
-Python, whose **Tk 8.5** has an Aqua repaint bug. Check with
-`python3 -c "import tkinter; print(tkinter.TkVersion)"` — you want **8.6**:
-```bash
-brew install python-tk@3.11
-/opt/homebrew/bin/python3.11 -m venv .venv
-.venv/bin/pip install pyserial
-.venv/bin/python app.py
-```
+The GUI opens as an empty white window with no tabs, and resizing doesn't help.
+
+You're running it on Apple's Command Line Tools Python, whose **Tk 8.5** has an
+Aqua repaint bug. It is not a crash — the process is alive and silent. Confirm
+with `python3 -c "import tkinter; print(tkinter.TkVersion)"`; if that prints
+8.5, rebuild the venv on a Tk 8.6 Python as shown in
+[Install → macOS](#macos-apple-silicon-and-intel).
 
 ---
 
