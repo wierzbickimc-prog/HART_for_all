@@ -1,0 +1,26 @@
+{
+  "name": "TEMPLATE: <vendor> <model> device-specific",
+  "description": "Fill this in from the vendor's HART command documentation (e.g. Endress+Hauser 'HART supplementary documentation' / Yokogawa manual HART command tables). Device-specific commands are numbered 128-253 and DIFFER PER DEVICE MODEL AND REVISION -- never guess them. Every command/offset below is a placeholder.",
+  "match": {"manufacturer_code": null, "device_type_code": null,
+            "_todo": "set both from the Connection tab identity so the app can warn on mismatch"},
+  "fields": [
+    {"id": "example_mode", "label": "Example mode (TODO)", "type": "enum8",
+     "enum": {"0": "off", "1": "on"},
+     "_todo": "replace with a real parameter from the vendor command table"},
+    {"id": "example_value", "label": "Example value (TODO)", "type": "float", "unit": "?"},
+    {"id": "reserved", "type": "pad", "n": 2,
+     "_todo": "use pad fields to skip reserved/unused bytes in a layout"}
+  ],
+  "commands": [
+    {"id": "example_block",
+     "read": {"command": null,
+              "_todo": "vendor read command number, e.g. 197; request_hex for any index byte the request needs, e.g. '01'"},
+     "response_fields": ["example_mode", "reserved", "example_value"],
+     "write": {"command": null,
+               "_todo": "vendor write command number; request_fields in the exact order the command table specifies"},
+     "request_fields": ["example_mode", "example_value"]}
+  ],
+  "groups": [
+    {"label": "Example group", "fields": ["example_mode", "example_value"]}
+  ]
+}

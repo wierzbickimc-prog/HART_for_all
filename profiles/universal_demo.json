@@ -1,0 +1,42 @@
+{
+  "name": "Universal demo (any HART device)",
+  "description": "Works on any HART transmitter. Exists to prove the profile engine end-to-end and as a copy-paste reference for building device-specific profiles from vendor HART command documentation.",
+  "match": {"manufacturer_code": null, "device_type_code": null},
+  "fields": [
+    {"id": "tag",        "label": "Tag",             "type": "packed_ascii", "n": 8},
+    {"id": "descriptor", "label": "Descriptor",      "type": "packed_ascii", "n": 16},
+    {"id": "date",       "label": "Date",            "type": "date"},
+    {"id": "alarm",      "label": "Alarm select",    "type": "enum8", "readonly": true,
+     "enum": {"0": "high", "1": "low", "2": "hold", "250": "none"}},
+    {"id": "xfer",       "label": "Transfer fn",     "type": "enum8", "readonly": true,
+     "enum": {"0": "linear", "1": "sqrt", "2": "sqrt3/2", "3": "sqrt5/2", "250": "none"}},
+    {"id": "range_unit", "label": "Range unit code", "type": "u8"},
+    {"id": "urv",        "label": "URV (20 mA)",     "type": "float", "unit": "range unit"},
+    {"id": "lrv",        "label": "LRV (4 mA)",      "type": "float", "unit": "range unit"},
+    {"id": "damping",    "label": "Damping",         "type": "float", "unit": "s"},
+    {"id": "wp",         "label": "Write protect",   "type": "enum8", "readonly": true,
+     "enum": {"0": "no", "1": "yes", "250": "unknown"}}
+  ],
+  "commands": [
+    {"id": "identification",
+     "read": {"command": 13},
+     "response_fields": ["tag", "descriptor", "date"],
+     "write": {"command": 18},
+     "request_fields": ["tag", "descriptor", "date"]},
+
+    {"id": "output",
+     "read": {"command": 15},
+     "response_fields": ["alarm", "xfer", "range_unit", "urv", "lrv", "damping", "wp"],
+     "write": {"command": 35},
+     "request_fields": ["range_unit", "urv", "lrv"]},
+
+    {"id": "damping_write",
+     "write": {"command": 34},
+     "request_fields": ["damping"]}
+  ],
+  "groups": [
+    {"label": "Identification", "fields": ["tag", "descriptor", "date"]},
+    {"label": "Output",         "fields": ["range_unit", "urv", "lrv", "damping"]},
+    {"label": "Status",         "fields": ["alarm", "xfer", "wp"]}
+  ]
+}
