@@ -118,10 +118,14 @@ class HartMaster:
         out = {"raw": d.hex()}
         if len(d) < 12:
             return out
+        # Bytes 1-2 mean different things by revision. HART 5: byte 1 is the
+        # manufacturer ID, byte 2 the device type. HART 6/7 merged the pair
+        # into one 16-bit expanded device type and moved the manufacturer to
+        # bytes 17-18 -- so on a HART 7 device byte 1 is NOT a manufacturer.
+        # Both raw bytes are kept; `manufacturer_id` is the resolved value.
         out["expanded_device_type"] = (d[1] << 8) | d[2]
-        out["manufacturer_code"] = d[1]
-        out["manufacturer_hint"] = U.manufacturer_hint(d[1])
-        out["device_type_code"] = d[2]
+        out["manufacturer_code"] = d[1]      # raw byte 1 (HART 5 layout)
+        out["device_type_code"] = d[2]       # raw byte 2 (HART 5 layout)
         out["min_request_preambles"] = d[3]
         out["hart_revision"] = d[4]
         out["device_revision"] = d[5]
@@ -136,7 +140,16 @@ class HartMaster:
         if len(d) >= 16:
             out["config_change_counter"] = (d[14] << 8) | d[15]
         if len(d) >= 19:
-            out["manufacturer_id"] = (d[17] << 8) | d[18]
+            out["expanded_manufacturer_id"] = (d[17] << 8) | d[18]
+        # Resolve the manufacturer for the revision actually reported. A HART 6+
+        # device whose reply is too short to carry bytes 17-18 leaves this None
+        # rather than falling back to byte 1, which would be a wrong vendor.
+        if out["hart_revision"] >= 6:
+            out["manufacturer_id"] = out.get("expanded_manufacturer_id")
+        else:
+            out["manufacturer_id"] = d[1]
+        if out["manufacturer_id"] is not None:
+            out["manufacturer_hint"] = U.manufacturer_hint(out["manufacturer_id"])
         return out
 
     def read_identity(self) -> Dict:

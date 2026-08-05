@@ -230,7 +230,7 @@ class App(tk.Tk):
 
         idf = ttk.LabelFrame(f, text="Device identity", padding=8)
         idf.pack(fill="both", expand=True, pady=6)
-        self.id_mfr = self._readonly(idf, "Manufacturer code:", 0)
+        self.id_mfr = self._readonly(idf, "Manufacturer ID:", 0)
         self.id_type = self._readonly(idf, "Device type:", 1)
         self.id_dev = self._readonly(idf, "Device ID:", 2)
         self.id_hart = self._readonly(idf, "HART revision:", 3)
@@ -418,19 +418,30 @@ class App(tk.Tk):
         self.ident_var.set("")
 
     def _show_identity(self, ident):
-        mfr = ident.get("manufacturer_code")
+        rev = ident.get("hart_revision", 5)
+        mfr = ident.get("manufacturer_id")
         hint = ident.get("manufacturer_hint", "")
-        self.id_mfr.set(f"0x{mfr:02X} ({mfr}) {hint}" if mfr is not None else "-")
-        self.id_type.set(f"0x{ident.get('device_type_code',0):02X}")
+        if mfr is None:
+            # HART 6+ device whose command 0 reply was too short to carry it.
+            self.id_mfr.set("- (not reported)")
+        else:
+            self.id_mfr.set(f"0x{mfr:04X} ({mfr}) {hint}".rstrip())
+        # HART 6/7 report one 16-bit expanded device type; HART 5 a single byte.
+        if rev >= 6:
+            edt = ident.get("expanded_device_type", 0)
+            self.id_type.set(f"0x{edt:04X} (expanded)")
+        else:
+            self.id_type.set(f"0x{ident.get('device_type_code',0):02X}")
         self.id_dev.set(str(ident.get("device_id", "-")))
-        self.id_hart.set(str(ident.get("hart_revision", "-")))
+        self.id_hart.set(str(rev))
         self.id_rev.set(f"{ident.get('device_revision','-')} / "
                         f"{ident.get('software_revision','-')}")
         if self.hart and self.hart.address:
             self.id_addr.set(self.hart.address.hex(" "))
         tag = ""
-        self.ident_var.set(f"HART {ident.get('hart_revision','?')}  "
-                           f"dev 0x{ident.get('device_type_code',0):02X}  "
+        dev_t = (f"0x{ident.get('expanded_device_type',0):04X}" if rev >= 6
+                 else f"0x{ident.get('device_type_code',0):02X}")
+        self.ident_var.set(f"HART {rev}  dev {dev_t}  "
                            f"id {ident.get('device_id','?')}")
 
     # ---- Variables tab (live) --------------------------------------------
@@ -1000,17 +1011,32 @@ class App(tk.Tk):
         self.r_slim = self._readonly(cur, "Sensor limits:", 7)
         self.r_span = self._readonly(cur, "Min span:", 8)
 
+        self._unit_choices = U.unit_choices()
+        unit_labels = [c[1] for c in self._unit_choices]
+
         wr = ttk.LabelFrame(f, text="Write range (cmd 35)", padding=8)
         wr.pack(fill="x", pady=6)
         self.w_lrv, _ = self._labeled(wr, "LRV (4 mA):", 12, 0, 0)
         self.w_urv, _ = self._labeled(wr, "URV (20 mA):", 12, 0, 2)
         ttk.Label(wr, text="Unit:").grid(row=1, column=0, sticky="e", padx=4)
         self.w_unit = ttk.Combobox(wr, width=16, state="readonly",
-                                   values=[c[1] for c in U.unit_choices()])
+                                   values=unit_labels)
         self.w_unit.grid(row=1, column=1, sticky="w", padx=4)
-        self._unit_choices = U.unit_choices()
         ttk.Button(wr, text="Write range",
                    command=self._write_range).grid(row=1, column=3, padx=6)
+
+        # Cmd 35 only restates the range in whatever unit it is given; changing
+        # the measurement unit itself is cmd 44, which most devices also apply
+        # to the range unit -- so both boxes re-read after a write.
+        pu = ttk.LabelFrame(f, text="Primary variable unit (cmd 44)", padding=8)
+        pu.pack(fill="x", pady=6)
+        self.r_pvunit = self._readonly(pu, "Present PV unit:", 0)
+        ttk.Label(pu, text="New unit:").grid(row=1, column=0, sticky="e", padx=4)
+        self.w_pvunit = ttk.Combobox(pu, width=16, state="readonly",
+                                     values=unit_labels)
+        self.w_pvunit.grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Button(pu, text="Write PV unit",
+                   command=self._write_pv_unit).grid(row=1, column=3, padx=6)
 
         other = ttk.Frame(f); other.pack(fill="x", pady=6)
         self.w_damp, _ = self._labeled(other, "Damping (s):", 10, 0, 0)
@@ -1041,6 +1067,8 @@ class App(tk.Tk):
             out = m.read_pv_output_info()
             try: out.update({"sensor": m.read_pv_sensor_info()})
             except Exception: pass
+            try: out.update({"pv": m.read_pv()})
+            except Exception: pass
             return out
 
         def done(o):
@@ -1054,6 +1082,13 @@ class App(tk.Tk):
             self.w_lrv.set(f"{o['lrv']:.6g}")
             self.w_urv.set(f"{o['urv']:.6g}")
             self.w_damp.set(f"{o['damping_s']:.3g}")
+            # Seed the pickers from the device so a range-only write does not
+            # silently ship whatever unit happened to be selected (or none).
+            self._set_unit_combo(self.w_unit, o.get("range_unit_code"))
+            pv = o.get("pv")
+            if pv:
+                self.r_pvunit.set(pv.get("pv_unit", "-"))
+                self._set_unit_combo(self.w_pvunit, pv.get("pv_unit_code"))
             s = o.get("sensor")
             if s:
                 self.r_slim.set(f"{s['lower_sensor_limit']:.4g} .. "
@@ -1062,8 +1097,19 @@ class App(tk.Tk):
 
         self.worker.submit(job, on_done=done, on_error=self._op_error)
 
-    def _selected_unit_code(self):
-        label = self.w_unit.get()
+    def _set_unit_combo(self, combo, code):
+        """Point a unit picker at `code`. A code outside the curated table
+        leaves the picker blank rather than showing a wrong unit."""
+        if code is None:
+            return
+        for c, lbl in self._unit_choices:
+            if c == code:
+                combo.set(lbl)
+                return
+        combo.set("")
+
+    def _selected_unit_code(self, combo=None):
+        label = (combo or self.w_unit).get()
         for code, lbl in self._unit_choices:
             if lbl == label:
                 return code
@@ -1084,6 +1130,19 @@ class App(tk.Tk):
         self._confirm_write(
             f"Write range  LRV={lrv}  URV={urv}  unit code {code}?",
             lambda: m.write_range(code, urv, lrv),
+            after=self._read_ranging_all)
+
+    def _write_pv_unit(self):
+        if not self._guard(): return
+        code = self._selected_unit_code(self.w_pvunit)
+        if code is None:
+            messagebox.showwarning("Unit", "Pick a PV unit.")
+            return
+        m = self.hart
+        self._confirm_write(
+            f"Write PV unit code {code} ({U.unit_name(code)})?\n\n"
+            "The device re-scales PV, LRV and URV into the new unit.",
+            lambda: m.write_pv_unit(code),
             after=self._read_ranging_all)
 
     def _write_damping(self):

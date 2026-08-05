@@ -17,7 +17,8 @@ Profile JSON shape (see profiles/*.json for working examples):
 
 {
   "name": "...", "description": "...",
-  "match": {"manufacturer_code": 17, "device_type_code": null},
+  "match": {"manufacturer_code": 17, "device_type_code": null,
+            "expanded_device_type": null},
   "fields": [
      {"id":"tag","label":"Tag","type":"packed_ascii","n":8},
      {"id":"urv","label":"URV","type":"float","unit":"range unit"},
@@ -233,11 +234,18 @@ class DeviceProfile:
 
     # ---------------------------------------------------------------- match
     def matches(self, identity: dict) -> bool:
+        # "manufacturer_code" matches the resolved manufacturer, so a profile
+        # keyed to a vendor still matches on HART 6/7 where the ID is not
+        # byte 1 of command 0. "expanded_device_type" is the HART 6/7 way to
+        # pin a device type; "device_type_code" stays the HART 5 spelling.
         mc = self.match.get("manufacturer_code")
         dt = self.match.get("device_type_code")
-        if mc is not None and identity.get("manufacturer_code") != mc:
+        edt = self.match.get("expanded_device_type")
+        if mc is not None and identity.get("manufacturer_id") != mc:
             return False
         if dt is not None and identity.get("device_type_code") != dt:
+            return False
+        if edt is not None and identity.get("expanded_device_type") != edt:
             return False
         return True
 
