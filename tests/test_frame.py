@@ -111,6 +111,31 @@ def test_packed_ascii_known_vector():
     assert codec.unpack_ascii(packed, 4) == "AB"
 
 
+def test_response_code_is_command_specific():
+    d = frame.decode_response_code
+    # 29 means a span problem on cmd 35, but nothing known elsewhere
+    assert "span" in d(29, 35).lower()
+    assert d(29, 1) == "Command response code 29"
+    assert d(29) == "Command response code 29"
+    # near-universal codes still win where no command-specific entry exists
+    assert d(7, 35) == "In write protect mode"
+    assert d(64, 35) == "Command not implemented"
+    # success and comm errors are never command-specific
+    assert d(0, 35) == "Success"
+    assert d(0xC0, 35).startswith("Comm error")
+
+
+def test_response_text_uses_the_frames_own_command():
+    cmd0 = bytes([0xFE, 0x2A, 0x3D, 5, 7, 2, 1, 0x08, 0x00, 0x03, 0x09, 0x0A])
+    addr = frame.build_long_address(cmd0)
+    body = (bytes([0x86]) + addr + bytes([35, 2, 29, 0x40]))
+    resp = frame.parse_response(bytes([frame.PREAMBLE] * 5) + body
+                                + bytes([frame.checksum(body)]))
+    assert resp is not None and resp.command == 35
+    assert resp.response_code == 29
+    assert "span" in resp.response_code_text().lower()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

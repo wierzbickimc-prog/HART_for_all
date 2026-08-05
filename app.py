@@ -1012,6 +1012,7 @@ class App(tk.Tk):
         self.r_span = self._readonly(cur, "Min span:", 8)
 
         self._unit_choices = U.unit_choices()
+        self._sensor = None           # cmd 14 limits, refreshed by "Read all"
         unit_labels = [c[1] for c in self._unit_choices]
 
         wr = ttk.LabelFrame(f, text="Write range (cmd 35)", padding=8)
@@ -1090,6 +1091,7 @@ class App(tk.Tk):
                 self.r_pvunit.set(pv.get("pv_unit", "-"))
                 self._set_unit_combo(self.w_pvunit, pv.get("pv_unit_code"))
             s = o.get("sensor")
+            self._sensor = s          # kept for the span/limit pre-check
             if s:
                 self.r_slim.set(f"{s['lower_sensor_limit']:.4g} .. "
                                 f"{s['upper_sensor_limit']:.4g} {s.get('unit','')}")
@@ -1126,11 +1128,42 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showwarning("Range", "LRV and URV must be numbers.")
             return
+        problem = self._range_problem(code, lrv, urv)
+        if problem and not messagebox.askyesno(
+                "Range outside device limits",
+                f"{problem}\n\nThe device will most likely reject this. "
+                "Send it anyway?"):
+            return
         m = self.hart
         self._confirm_write(
             f"Write range  LRV={lrv}  URV={urv}  unit code {code}?",
             lambda: m.write_range(code, urv, lrv),
             after=self._read_ranging_all)
+
+    def _range_problem(self, code, lrv, urv):
+        """Describe how LRV/URV violate the cmd 14 sensor limits, or None.
+
+        Only meaningful when the range is being written in the same unit the
+        device reported its limits in -- comparing across units would be
+        nonsense, so a unit mismatch skips the check and lets the device rule.
+        """
+        s = self._sensor
+        if not s or s.get("unit_code") != code:
+            return None
+        span = abs(urv - lrv)
+        min_span = s.get("minimum_span")
+        unit = s.get("unit", "")
+        if min_span and span < min_span:
+            return (f"Span {span:.6g} {unit} is below this device's minimum "
+                    f"span of {min_span:.6g} {unit}.")
+        lo, hi = s.get("lower_sensor_limit"), s.get("upper_sensor_limit")
+        if lo is not None and hi is not None:
+            out = [f"{n} {v:.6g} {unit}" for n, v in (("LRV", lrv), ("URV", urv))
+                   if not lo <= v <= hi]
+            if out:
+                return (f"{' and '.join(out)} outside the sensor limits "
+                        f"{lo:.6g} .. {hi:.6g} {unit}.")
+        return None
 
     def _write_pv_unit(self):
         if not self._guard(): return

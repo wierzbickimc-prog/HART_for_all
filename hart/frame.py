@@ -142,7 +142,7 @@ class HartResponse:
         return bool(self.response_code & 0x80)
 
     def response_code_text(self) -> str:
-        return decode_response_code(self.response_code)
+        return decode_response_code(self.response_code, self.command)
 
 
 def find_frame_start(buf: bytes) -> int:
@@ -225,11 +225,36 @@ def parse_response(buf: bytes) -> Optional[HartResponse]:
 
 # --- human-readable status --------------------------------------------------
 
-def decode_response_code(rc: int) -> str:
+# Response codes whose meaning is specific to one command. Codes not listed
+# for a command fall back to the near-universal table in decode_response_code.
+# 29 is not in the near-universal set: it was observed on a Siemens SITRANS
+# P320 rejecting a 100 mbar span against a 144 mbar reported minimum, so the
+# label describes that behaviour rather than quoting a spec line.
+_RANGE_CODES = {
+    9: "Lower range value too high",
+    10: "Lower range value too low",
+    11: "Upper range value too high",
+    12: "Upper range value too low",
+    13: "Both range values out of limits",
+    14: "Span too small",
+    29: "Invalid span (smaller than the device minimum span)",
+}
+
+PER_COMMAND_CODES = {
+    35: _RANGE_CODES,       # write PV range values
+    36: _RANGE_CODES,       # set URV at applied input
+    37: _RANGE_CODES,       # set LRV at applied input
+    44: {2: "Invalid selection (unit code not supported by this device)"},
+}
+
+
+def decode_response_code(rc: int, command: Optional[int] = None) -> str:
     """
     Interpret the first status byte. If bit7 is set the low 7 bits are a
     communication-error bitmask; otherwise the byte is a command-response code
     whose meaning is command-specific (0 == success for all commands).
+
+    Pass `command` to get the command-specific reading where one is known.
     """
     if rc == 0:
         return "Success"
@@ -255,6 +280,10 @@ def decode_response_code(rc: int) -> str:
         32: "Device busy",
         64: "Command not implemented",
     }
+    if command is not None:
+        specific = PER_COMMAND_CODES.get(command, {}).get(rc)
+        if specific:
+            return specific
     return common.get(rc, f"Command response code {rc}")
 
 
