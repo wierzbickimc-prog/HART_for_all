@@ -53,15 +53,29 @@ Files → **Properties → Permissions → tick "Allow executing file as program
 (one-time, no terminal), then double-click to run. If your file manager
 launches it as a text file instead, that's the checkbox to look for.
 
-Both builds are self-contained single-app downloads — no `pip install`, no
-venv, no system Tkinter package needed. Only for a hardware modem you may
-still need a one-time driver step; see the modem notes for your OS below.
+**Windows** — download `HART_for_all.exe` and double-click it; no install
+step. It's an unsigned build (no code-signing certificate), so expect two
+speed bumps the first time:
+- **SmartScreen** blocks it as an "unrecognized app" — click **More info →
+  Run anyway**. Unlike macOS this can reappear on later releases (a new
+  build has a new hash), not just the first run ever.
+- Some **antivirus / Windows Defender** setups flag PyInstaller's onefile
+  `.exe` format itself as suspicious (a known false-positive pattern for this
+  packer, not anything specific to this app). If it gets quarantined, restore
+  it from quarantine / add an exclusion for the file.
+
+All three builds are self-contained single-app downloads — no `pip install`,
+no venv, no system Tkinter package needed. For a hardware modem you may still
+need a one-time driver step; see the modem notes for your OS below.
 
 ### Building these packages yourself
 
 ```bash
 bash packaging/macos/build.sh    # on a Mac -> dist/HART_for_all-macOS.zip
 bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-x86_64.AppImage
+```
+```powershell
+packaging\windows\build.ps1      # on Windows -> dist\HART_for_all.exe
 ```
 
 ---
