@@ -41,6 +41,7 @@ rm -rf build dist HART_for_all.spec
     --add-data "profiles:profiles" \
     --osx-bundle-identifier "com.builtdna.hartforall" \
     --target-architecture universal2 \
+    --collect-submodules serial.urlhandler \
     app.py
 
 echo "Bundle architectures: $(lipo -archs dist/HART_for_all.app/Contents/MacOS/HART_for_all)"

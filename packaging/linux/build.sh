@@ -22,6 +22,7 @@ python3 -m venv "${BUILD_VENV}"
 rm -rf build dist HART_for_all.spec AppDir
 "${BUILD_VENV}/bin/pyinstaller" --noconfirm --onefile --name HART_for_all \
     --add-data "profiles:profiles" \
+    --collect-submodules serial.urlhandler \
     app.py
 
 mkdir -p AppDir/usr/bin
