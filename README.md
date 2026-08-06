@@ -39,6 +39,8 @@ platforms via GitHub Actions (`.github/workflows/release.yml`) and attaches
 them to the repo's **[Releases](../../releases)** page. Python, Tkinter and
 pyserial are all bundled in — nothing to install first.
 
+Click on releases on the right pane to access the zip files.
+
 **macOS** — download `HART_for_all-macOS.zip`, unzip it (double-click), drag
 `HART_for_all.app` wherever you like, and double-click it. The app isn't
 notarized (that needs a paid Apple developer account), so the first launch
