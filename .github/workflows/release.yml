@@ -17,16 +17,26 @@ jobs:
           name: HART_for_all-macOS
           path: dist/HART_for_all-macOS.zip
 
+  # An AppImage is a native binary, so each architecture needs its own runner
+  # -- an x86_64 build dies with "Exec format error" on an ARM machine.
   linux:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y python3-tk python3-venv
       - run: bash packaging/linux/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: HART_for_all-linux
-          path: dist/HART_for_all-x86_64.AppImage
+          name: HART_for_all-linux-${{ matrix.arch }}
+          path: dist/HART_for_all-${{ matrix.arch }}.AppImage
 
   windows:
     runs-on: windows-latest
@@ -58,6 +68,7 @@ jobs:
         with:
           files: |
             artifacts/HART_for_all-macOS/HART_for_all-macOS.zip
-            artifacts/HART_for_all-linux/HART_for_all-x86_64.AppImage
+            artifacts/HART_for_all-linux-x86_64/HART_for_all-x86_64.AppImage
+            artifacts/HART_for_all-linux-aarch64/HART_for_all-aarch64.AppImage
             artifacts/HART_for_all-windows/HART_for_all.exe
             artifacts/HART_for_all-windows/Install_CP210x_Driver.bat

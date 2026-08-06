@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
-# Build a double-clickable HART_for_all-x86_64.AppImage for Ubuntu/Debian.
+# Build a double-clickable AppImage for Ubuntu/Debian.
 #
-# Produces dist/HART_for_all-x86_64.AppImage -- a single file with Python,
+# Produces dist/HART_for_all-<arch>.AppImage -- a single file with Python,
 # Tkinter and pyserial bundled in. Users need no system Python or pip.
+#
+# The AppImage is a native binary, so it only runs on the architecture it was
+# built on: build on x86_64 for an Intel/AMD machine, on aarch64 for an ARM
+# one (a Raspberry Pi, or a Linux VM on an Apple Silicon Mac). There is no
+# cross-compiling here -- CI runs this script once per architecture.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 REPO_ROOT="$(pwd)"
+
+# appimagetool names its own releases x86_64 / aarch64, and needs $ARCH set
+# because it cannot always infer the target from the AppDir alone.
+case "$(uname -m)" in
+    x86_64|amd64)   ARCH="x86_64" ;;
+    aarch64|arm64)  ARCH="aarch64" ;;
+    *)
+        echo "Unsupported build architecture: $(uname -m)" >&2
+        echo "This script builds x86_64 and aarch64 AppImages." >&2
+        exit 1
+        ;;
+esac
+export ARCH
 
 if ! python3 -c "import tkinter" >/dev/null 2>&1; then
     echo "python3-tk is required to build (it's what gets bundled)." >&2
@@ -37,14 +55,17 @@ exec "${HERE}/usr/bin/HART_for_all" "$@"
 EOF
 chmod +x AppDir/AppRun
 
-APPIMAGETOOL="${REPO_ROOT}/.appimagetool.AppImage"
+OUTPUT="dist/HART_for_all-${ARCH}.AppImage"
+
+# Cached per architecture: the wrong one would fail with "Exec format error".
+APPIMAGETOOL="${REPO_ROOT}/.appimagetool-${ARCH}.AppImage"
 if [ ! -x "${APPIMAGETOOL}" ]; then
-    curl -sL -o "${APPIMAGETOOL}" \
-        https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+    curl -fsSL -o "${APPIMAGETOOL}" \
+        "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage"
     chmod +x "${APPIMAGETOOL}"
 fi
-"${APPIMAGETOOL}" --appimage-extract-and-run AppDir dist/HART_for_all-x86_64.AppImage
+"${APPIMAGETOOL}" --appimage-extract-and-run AppDir "${OUTPUT}"
 
 rm -rf "${BUILD_VENV}" AppDir
 echo
-echo "Built dist/HART_for_all-x86_64.AppImage"
+echo "Built ${OUTPUT}"

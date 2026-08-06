@@ -17,7 +17,7 @@ AppDir/
 *.spec
 .build_venv_macos/
 .build_venv_linux/
-.appimagetool.AppImage
+.appimagetool-*.AppImage
 
 # datalogger output
 *.csv

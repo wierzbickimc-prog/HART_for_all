@@ -48,10 +48,17 @@ will be blocked as "unidentified developer": **right-click the app → Open →
 Open** once, and macOS remembers your choice from then on. Plain double-click
 works every time after that.
 
-**Ubuntu** — download `HART_for_all-x86_64.AppImage`. Right-click it in
-Files → **Properties → Permissions → tick "Allow executing file as program"**
+**Ubuntu** — two builds, one per architecture. Run `uname -m` to see which you
+need: `x86_64` (any Intel/AMD PC) → `HART_for_all-x86_64.AppImage`, `aarch64`
+(a Raspberry Pi, or a Linux VM on an Apple Silicon Mac) →
+`HART_for_all-aarch64.AppImage`. Then right-click it in Files →
+**Properties → Permissions → tick "Allow executing file as program"**
 (one-time, no terminal), then double-click to run. If your file manager
 launches it as a text file instead, that's the checkbox to look for.
+
+Downloading the wrong one gives `cannot execute binary file: Exec format
+error` — that is always an architecture mismatch, never a permissions or
+driver problem.
 
 **Windows** — download `HART_for_all.exe` and double-click it; no install
 step. It's an unsigned build (no code-signing certificate), so expect two
@@ -86,8 +93,11 @@ Ubuntu already have theirs in-box).
 
 ```bash
 bash packaging/macos/build.sh    # on a Mac -> dist/HART_for_all-macOS.zip
-bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-x86_64.AppImage
+bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-<arch>.AppImage
 ```
+The Linux script builds for the machine it runs on — `x86_64` on an Intel/AMD
+box, `aarch64` on an ARM one. There is no cross-compiling; CI runs it on one
+runner per architecture.
 ```powershell
 packaging\windows\build.ps1      # on Windows -> dist\HART_for_all.exe, dist\Install_CP210x_Driver.bat
 ```
