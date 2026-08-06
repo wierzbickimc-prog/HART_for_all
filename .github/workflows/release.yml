@@ -40,7 +40,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: HART_for_all-windows
-          path: dist/HART_for_all.exe
+          path: |
+            dist/HART_for_all.exe
+            dist/Install_CP210x_Driver.bat
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -58,3 +60,4 @@ jobs:
             artifacts/HART_for_all-macOS/HART_for_all-macOS.zip
             artifacts/HART_for_all-linux/HART_for_all-x86_64.AppImage
             artifacts/HART_for_all-windows/HART_for_all.exe
+            artifacts/HART_for_all-windows/Install_CP210x_Driver.bat

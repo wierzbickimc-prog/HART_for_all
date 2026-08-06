@@ -33,6 +33,8 @@ foreach ($p in @("build", "dist", "HART_for_all.spec")) {
     --collect-submodules serial.urlhandler `
     app.py
 
+Copy-Item packaging\windows\install_cp210x_driver.bat dist\Install_CP210x_Driver.bat
+
 Remove-Item -Recurse -Force $BuildVenv
 Write-Host ""
-Write-Host "Built dist\HART_for_all.exe"
+Write-Host "Built dist\HART_for_all.exe and dist\Install_CP210x_Driver.bat"

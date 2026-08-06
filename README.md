@@ -64,9 +64,23 @@ speed bumps the first time:
   packer, not anything specific to this app). If it gets quarantined, restore
   it from quarantine / add an exclusion for the file.
 
+**Windows also needs the USB modem driver**, which Windows doesn't ship
+in-box the way macOS/Ubuntu do. Also download `Install_CP210x_Driver.bat`
+from the same release and double-click it: approve the UAC prompt, and it
+fetches the current signed driver straight from Silicon Labs and installs it
+(no typing required). It's a plain batch script, not a repackaged copy of
+their installer — Silicon Labs' driver license doesn't allow us to
+redistribute their files ourselves, so the script always pulls the current
+one live from `silabs.com` rather than shipping a bundled/possibly-stale
+copy. Source: [Silicon Labs CP210x VCP
+drivers](https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers).
+If you'd rather do it by hand, or the script can't reach the internet: unzip
+their package yourself and right-click `silabser.inf` → **Install**.
+
 All three builds are self-contained single-app downloads — no `pip install`,
 no venv, no system Tkinter package needed. For a hardware modem you may still
-need a one-time driver step; see the modem notes for your OS below.
+need a one-time driver step; see the modem notes for your OS below (macOS and
+Ubuntu already have theirs in-box).
 
 ### Building these packages yourself
 
@@ -75,7 +89,7 @@ bash packaging/macos/build.sh    # on a Mac -> dist/HART_for_all-macOS.zip
 bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-x86_64.AppImage
 ```
 ```powershell
-packaging\windows\build.ps1      # on Windows -> dist\HART_for_all.exe
+packaging\windows\build.ps1      # on Windows -> dist\HART_for_all.exe, dist\Install_CP210x_Driver.bat
 ```
 
 ---
