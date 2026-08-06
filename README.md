@@ -32,7 +32,39 @@ wizards) — those live in device descriptions and are out of scope here.
 
 ---
 
-## Install
+## Download and run (no Python, no terminal)
+
+Every push of a `vX.Y.Z` tag builds installer-free packages for both
+platforms via GitHub Actions (`.github/workflows/release.yml`) and attaches
+them to the repo's **[Releases](../../releases)** page. Python, Tkinter and
+pyserial are all bundled in — nothing to install first.
+
+**macOS** — download `HART_for_all-macOS.zip`, unzip it (double-click), drag
+`HART_for_all.app` wherever you like, and double-click it. The app isn't
+notarized (that needs a paid Apple developer account), so the first launch
+will be blocked as "unidentified developer": **right-click the app → Open →
+Open** once, and macOS remembers your choice from then on. Plain double-click
+works every time after that.
+
+**Ubuntu** — download `HART_for_all-x86_64.AppImage`. Right-click it in
+Files → **Properties → Permissions → tick "Allow executing file as program"**
+(one-time, no terminal), then double-click to run. If your file manager
+launches it as a text file instead, that's the checkbox to look for.
+
+Both builds are self-contained single-app downloads — no `pip install`, no
+venv, no system Tkinter package needed. Only for a hardware modem you may
+still need a one-time driver step; see the modem notes for your OS below.
+
+### Building these packages yourself
+
+```bash
+bash packaging/macos/build.sh    # on a Mac -> dist/HART_for_all-macOS.zip
+bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-x86_64.AppImage
+```
+
+---
+
+## Install from source
 
 Both platforms need Python 3.9+ and pyserial. The GUI also needs Tkinter.
 

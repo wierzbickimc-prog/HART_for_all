@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=HART for all
+Comment=Native HART configurator for USB HART modems
+Exec=HART_for_all
+Icon=hart_for_all
+Categories=Utility;Engineering;
+Terminal=false

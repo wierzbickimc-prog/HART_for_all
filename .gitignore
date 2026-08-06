@@ -10,5 +10,14 @@ __pycache__/
 # macOS
 .DS_Store
 
+# packaging build output
+build/
+dist/
+AppDir/
+*.spec
+.build_venv_macos/
+.build_venv_linux/
+.appimagetool.AppImage
+
 # datalogger output
 *.csv
