@@ -1,6 +1,6 @@
-# Build a double-clickable HART_for_all.exe for Windows.
+# Build a double-clickable HART_for_all-Windows.exe for Windows.
 #
-# Produces dist\HART_for_all.exe -- a single file with Python, Tkinter and
+# Produces dist\HART_for_all-Windows.exe -- a single file with Python, Tkinter and
 # pyserial bundled in. Users need no system Python or pip.
 #
 # Run from a "python" on PATH that has Tkinter (the python.org installer
@@ -33,8 +33,9 @@ foreach ($p in @("build", "dist", "HART_for_all.spec")) {
     --collect-submodules serial.urlhandler `
     app.py
 
-Copy-Item packaging\windows\install_cp210x_driver.bat dist\Install_CP210x_Driver.bat
+Move-Item dist\HART_for_all.exe dist\HART_for_all-Windows.exe
+Copy-Item packaging\windows\install_cp210x_driver.bat dist\Install_CP210x_Driver-Windows.bat
 
 Remove-Item -Recurse -Force $BuildVenv
 Write-Host ""
-Write-Host "Built dist\HART_for_all.exe and dist\Install_CP210x_Driver.bat"
+Write-Host "Built dist\HART_for_all-Windows.exe and dist\Install_CP210x_Driver-Windows.bat"

@@ -34,7 +34,7 @@ wizards) — those live in device descriptions and are out of scope here.
 
 ## Download and run (no Python, no terminal)
 
-Every push of a `vX.Y.Z` tag builds installer-free packages for both
+Every push of a `vX.Y.Z` tag tests the app and builds installer-free packages for all three
 platforms via GitHub Actions (`.github/workflows/release.yml`) and attaches
 them to the repo's **[Releases](../../releases)** page. Python, Tkinter and
 pyserial are all bundled in — nothing to install first.
@@ -48,12 +48,12 @@ will be blocked as "unidentified developer": **right-click the app → Open →
 Open** once, and macOS remembers your choice from then on. Plain double-click
 works every time after that.
 
-**Ubuntu** — download `HART_for_all-x86_64.AppImage`. Right-click it in
+**Linux (Ubuntu)** — download `HART_for_all-Linux-x86_64.AppImage`. Right-click it in
 Files → **Properties → Permissions → tick "Allow executing file as program"**
 (one-time, no terminal), then double-click to run. If your file manager
 launches it as a text file instead, that's the checkbox to look for.
 
-**Windows** — download `HART_for_all.exe` and double-click it; no install
+**Windows** — download `HART_for_all-Windows.exe` and double-click it; no install
 step. It's an unsigned build (no code-signing certificate), so expect two
 speed bumps the first time:
 - **SmartScreen** blocks it as an "unrecognized app" — click **More info →
@@ -65,7 +65,7 @@ speed bumps the first time:
   it from quarantine / add an exclusion for the file.
 
 **Windows also needs the USB modem driver**, which Windows doesn't ship
-in-box the way macOS/Ubuntu do. Also download `Install_CP210x_Driver.bat`
+in-box the way macOS/Ubuntu do. Also download `Install_CP210x_Driver-Windows.bat`
 from the same release and double-click it: approve the UAC prompt, and it
 fetches the current signed driver straight from Silicon Labs and installs it
 (no typing required). It's a plain batch script, not a repackaged copy of
@@ -86,10 +86,10 @@ Ubuntu already have theirs in-box).
 
 ```bash
 bash packaging/macos/build.sh    # on a Mac -> dist/HART_for_all-macOS.zip
-bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-x86_64.AppImage
+bash packaging/linux/build.sh    # on Ubuntu -> dist/HART_for_all-Linux-x86_64.AppImage
 ```
 ```powershell
-packaging\windows\build.ps1      # on Windows -> dist\HART_for_all.exe, dist\Install_CP210x_Driver.bat
+packaging\windows\build.ps1      # -> dist\HART_for_all-Windows.exe, dist\Install_CP210x_Driver-Windows.bat
 ```
 
 ---
@@ -315,7 +315,10 @@ Every write in the GUI asks for confirmation first.
 
 ```bash
 python3 tests/test_frame.py
+python3 tests/test_identity.py
 python3 tests/test_profile.py
+python3 tests/test_backup.py
+python3 tests/test_backup_preview.py
 python3 tests/test_study.py
 python3 tests/test_emulator.py
 ```
@@ -363,6 +366,45 @@ Response fields decode contiguously in listed order; `pad` skips reserved
 bytes. Writing one field of a multi-field command requires a prior read (the
 engine substitutes the new value among the cached siblings — the standard
 HART pattern).
+
+### Downloading and uploading configuration backups
+
+The **Device Profile** tab provides **Download backup...** and **Upload
+backup...** alongside **Load profile...**. Loading a profile defines the
+commands and fields; downloading a backup reads actual settings from the
+connected device and saves them with that definition in a portable JSON file.
+
+1. Connect to the source device. Load its device-specific profile if available;
+   otherwise downloading uses `universal_demo.json` automatically.
+2. Click **Download backup...** and choose where to save the JSON file. Settings
+   are read fresh from the device, including read-only fields for reference.
+   Incomplete reads fail instead of producing an incomplete backup.
+3. Connect to the original device or a replacement, click **Upload backup...**,
+   and select the saved file. A separate preview shows the source device, saved
+   date, profile, and all saved settings alongside current device values.
+   Uploading a file only opens this preview; it does not write to the device.
+4. Review the rows marked **Change**, **Unchanged**, or **Keep device value**.
+   Click **Push to device** and confirm when ready. Each write command runs
+   once with all its saved settings together, and the app reads them back to
+   verify the result. Read-only settings and the destination's device ID stay
+   with the destination. Close the preview to discard it without writing.
+
+The push button stays disabled for incompatible devices, incomplete reads, or
+settings that already match. **Refresh device** compares the backup again, and
+switching connections requires another comparison before pushing. The existing
+live parameter editor remains separate from the uploaded file preview.
+
+Transfers require the same manufacturer, device type, HART revision, and device
+revision, but allow a different device ID. Incompatible devices are rejected
+before writing. A failure stops the upload and reports that earlier commands
+may already have changed the destination; read its settings before retrying.
+
+**Backup coverage depends on the profile.** The default universal profile saves
+tag, descriptor, date, range unit, upper/lower range values, and damping, plus
+alarm, transfer-function, and write-protect status for reference. It does not
+capture every device setting, messages, long tags, or calibration/trim data.
+Additional configuration requires a profile with the appropriate documented
+read/write commands. Only writable fields are restored.
 
 The **Diagnostics** tab also has a raw command console (command number + hex
 data) for probing commands straight out of a vendor manual; responses and the

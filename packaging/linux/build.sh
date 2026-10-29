@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build a double-clickable HART_for_all-x86_64.AppImage for Ubuntu/Debian.
+# Build a double-clickable HART_for_all-Linux-x86_64.AppImage for Ubuntu/Debian.
 #
-# Produces dist/HART_for_all-x86_64.AppImage -- a single file with Python,
+# Produces dist/HART_for_all-Linux-x86_64.AppImage -- a single file with Python,
 # Tkinter and pyserial bundled in. Users need no system Python or pip.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -43,8 +43,8 @@ if [ ! -x "${APPIMAGETOOL}" ]; then
         https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
     chmod +x "${APPIMAGETOOL}"
 fi
-"${APPIMAGETOOL}" --appimage-extract-and-run AppDir dist/HART_for_all-x86_64.AppImage
+"${APPIMAGETOOL}" --appimage-extract-and-run AppDir dist/HART_for_all-Linux-x86_64.AppImage
 
 rm -rf "${BUILD_VENV}" AppDir
 echo
-echo "Built dist/HART_for_all-x86_64.AppImage"
+echo "Built dist/HART_for_all-Linux-x86_64.AppImage"

@@ -34,6 +34,8 @@ def main():
     import hart_emulator as E
     from hart.transport import HartTransport, TransportConfig
     from hart.master import HartMaster
+    from hart.profile import DeviceProfile
+    from hart.backup import ConfigurationBackup
 
     check("emulator imports without a pty module",
           E.PtyLink is not None and E.SocketLink is not None)
@@ -78,6 +80,12 @@ def main():
             m.write_tag_descriptor_date(tag, "socket link", 2026, 7, 27)
             check("packed-ASCII tag survives the round trip",
                   m.read_tag_descriptor_date()["tag"] == tag)
+            profile = DeviceProfile.load(os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "profiles", "universal_demo.json"))
+            backup = ConfigurationBackup.capture(m, profile)
+            check("configuration backup captures live device settings",
+                  backup.values["tag"] == tag and backup.values["damping"] == 3.25)
         finally:
             t.close()
 
@@ -102,7 +110,9 @@ def main():
 
     # ... and starting a second one afterwards must work (Stop then Launch).
     link2 = E.SocketLink("127.0.0.1", 0)
-    t2 = threading.Thread(target=E.run, args=(link2, E.FakeDevice()),
+    replacement = E.FakeDevice()
+    replacement.device_id = 54321
+    t2 = threading.Thread(target=E.run, args=(link2, replacement),
                           kwargs={"verbose": False}, daemon=True)
     t2.start()
     try:
@@ -110,8 +120,15 @@ def main():
                                           response_timeout_ms=1500))
         t.open()
         try:
+            destination = HartMaster(t)
             check("a second emulator can be started after stopping the first",
-                  HartMaster(t).connect(0)["device_id"] == 43981)
+                  destination.connect(0)["device_id"] == 54321)
+            values = backup.restore(destination)
+            check("backup uploads and verifies on a different device over HART",
+                  values["tag"] == "SOCKTEST" and values["damping"] == 3.25
+                  and values["date"] == (2026, 7, 27))
+            check("configuration transfer preserves replacement device identity",
+                  destination.read_identity()["device_id"] == 54321)
         finally:
             t.close()
     finally:

@@ -78,3 +78,11 @@ def test_profile_matches_expanded_device_type():
     assert p.matches(HartMaster._decode_cmd0(cmd0(7, 0x2A, 0x3D, mfr16=0x00A2)))
     p.match = {"expanded_device_type": 0x2A3E}
     assert not p.matches(HartMaster._decode_cmd0(cmd0(7, 0x2A, 0x3D, mfr16=0x00A2)))
+
+
+if __name__ == "__main__":
+    tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
+    for fn in tests:
+        fn()
+        print(f"  ok  {fn.__name__}")
+    print(f"\n{len(tests)}/{len(tests)} tests passed")

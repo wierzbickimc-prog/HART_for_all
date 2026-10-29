@@ -25,6 +25,7 @@ from tkinter import ttk, messagebox, filedialog
 from hart import frame as F
 from hart import units as U
 from hart.profile import DeviceProfile, ProfileError
+from hart.backup import ConfigurationBackup
 from hart.transport import HartTransport, TransportConfig, list_serial_ports
 from hart.master import HartMaster, HartError, HartTimeout, HartCommError
 
@@ -1258,10 +1259,12 @@ class App(tk.Tk):
         self.nb.add(f, text="Device Profile")
         self._dev_tab(f)
         self.prof: DeviceProfile | None = None
+        self.prof_preview = None
 
         bar = ttk.Frame(f); bar.pack(fill="x")
-        ttk.Button(bar, text="Load profile...",
-                   command=self._load_profile).pack(side="left")
+        self.prof_load_btn = ttk.Button(bar, text="Load profile...",
+                                        command=self._load_profile)
+        self.prof_load_btn.pack(side="left")
         self.prof_name = tk.StringVar(value="(no profile loaded)")
         ttk.Label(bar, textvariable=self.prof_name,
                   foreground="#036").pack(side="left", padx=8)
@@ -1269,6 +1272,19 @@ class App(tk.Tk):
                                         command=self._prof_read_all,
                                         state="disabled")
         self.prof_read_btn.pack(side="right")
+
+        backups = ttk.Frame(f)
+        backups.pack(fill="x", pady=(8, 0))
+        self.prof_download_btn = ttk.Button(
+            backups, text="Download backup...", command=self._prof_download)
+        self.prof_download_btn.pack(side="left")
+        self.prof_upload_btn = ttk.Button(
+            backups, text="Upload backup...", command=self._prof_upload)
+        self.prof_upload_btn.pack(side="left", padx=6)
+        ttk.Label(f, text="Download settings from this device, or upload a backup to preview "
+                  "its settings before choosing Push to device.\nBackups include the loaded "
+                  "profile's settings; without a profile, the universal settings are used.",
+                  wraplength=710).pack(anchor="w", pady=(4, 0))
 
         # scrollable parameter area
         wrap = ttk.Frame(f); wrap.pack(fill="both", expand=True, pady=6)
@@ -1357,6 +1373,293 @@ class App(tk.Tk):
             if row:
                 fs, var = row
                 var.set(fs.format(val))
+
+    def _prof_backup_busy(self, busy):
+        for button in (self.prof_load_btn, self.prof_download_btn,
+                       self.prof_upload_btn):
+            button["state"] = "disabled" if busy else "normal"
+        self.prof_read_btn["state"] = "normal" if self.prof and not busy else "disabled"
+
+    def _prof_backup_error(self, error):
+        self._prof_backup_busy(False)
+        self._set_status("Connected" if self.connected else "Disconnected",
+                         ok=self.connected)
+        self._dump_trace()
+        self._op_error(error)
+
+    def _prof_download(self):
+        if not self._guard():
+            return
+        prof = self.prof
+        if prof is None:
+            try:
+                prof = DeviceProfile.load(os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "profiles", "universal_demo.json"))
+            except (ProfileError, ValueError, OSError) as e:
+                messagebox.showerror("Backup", f"Could not load universal profile:\n{e}")
+                return
+        path = filedialog.asksaveasfilename(
+            title="Download configuration backup from device",
+            defaultextension=".json",
+            initialfile=f"hart-backup-{datetime.now():%Y%m%d-%H%M%S}.json",
+            filetypes=[("Configuration backup", "*.json")])
+        if not path:
+            return
+        m = self.hart
+        self._prof_backup_busy(True)
+        self._set_status("Downloading configuration...", busy=True)
+
+        def job():
+            backup = ConfigurationBackup.capture(m, prof)
+            backup.save(path)
+            return backup
+
+        def done(backup):
+            self.prof = backup.profile
+            self.prof.cache.update(backup.values)
+            self.prof_name.set(self.prof.name)
+            self._build_profile_rows()
+            self._prof_fill(backup.values)
+            self._prof_backup_busy(False)
+            self._set_status("Backup saved", ok=True)
+            self._dump_trace()
+            messagebox.showinfo("Backup saved", f"Configuration saved to:\n{path}\n\n"
+                                f"{len(backup.values)} fields captured, "
+                                f"{len(backup.writable_fields)} restorable.\n"
+                                "Read-only fields are included for reference.")
+
+        self.worker.submit(job, on_done=done, on_error=self._prof_backup_error)
+
+    def _prof_upload(self):
+        if not self._guard():
+            return
+        path = filedialog.askopenfilename(
+            title="Upload configuration backup for preview",
+            filetypes=[("Configuration backup", "*.json"), ("All files", "*")])
+        if not path:
+            return
+        try:
+            backup = ConfigurationBackup.load(path)
+        except (ProfileError, ValueError, OSError) as e:
+            messagebox.showerror("Cannot upload backup", str(e))
+            return
+        self._prof_preview_backup(backup, path)
+
+    def _prof_preview_backup(self, backup, path):
+        if self.prof_preview is not None:
+            if self.prof_preview.pushing:
+                self.prof_preview.lift()
+                return
+            self.prof_preview.destroy()
+        preview = tk.Toplevel(self)
+        self.prof_preview = preview
+        preview.title("Configuration preview")
+        preview.geometry("900x540")
+        preview.minsize(740, 420)
+        preview.transient(self)
+        preview.backup = backup
+        preview.device_master = None
+        preview.identity = None
+        preview.pushing = False
+        preview.protocol("WM_DELETE_WINDOW", lambda: self._prof_close_preview(preview))
+
+        body = ttk.Frame(preview, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Review configuration before pushing", font=("", 13, "bold")
+                  ).pack(anchor="w")
+        ttk.Label(body, text=f"File: {path}\nProfile: {backup.profile.name}\n"
+                  f"Source device: {backup.identity.get('device_id', '?')}    "
+                  f"Saved: {backup.document.get('captured_at', 'unknown')}",
+                  wraplength=850).pack(anchor="w", pady=(6, 4))
+        preview.destination = tk.StringVar(value="Destination: reading device...")
+        ttk.Label(body, textvariable=preview.destination).pack(anchor="w")
+        ttk.Label(body, text="Saved values remain in preview until you click Push to device. "
+                  "Read-only values are kept on the destination.",
+                  wraplength=850).pack(anchor="w", pady=(4, 8))
+
+        table = ttk.Frame(body)
+        table.pack(fill="both", expand=True)
+        preview.tree = ttk.Treeview(table, columns=("setting", "saved", "device", "action"),
+                                   show="headings", selectmode="browse")
+        for column, label, width in (("setting", "Setting", 200),
+                                     ("saved", "Saved in backup", 220),
+                                     ("device", "Current device", 220),
+                                     ("action", "On push", 170)):
+            preview.tree.heading(column, text=label)
+            preview.tree.column(column, width=width, minwidth=100)
+        scroll_y = ttk.Scrollbar(table, orient="vertical", command=preview.tree.yview)
+        scroll_x = ttk.Scrollbar(table, orient="horizontal", command=preview.tree.xview)
+        preview.tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        preview.tree.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
+        preview.tree.tag_configure("changed", foreground="#8a4500")
+        preview.tree.tag_configure("readonly", foreground="#666666")
+        preview.status = tk.StringVar()
+        ttk.Label(body, textvariable=preview.status, wraplength=850).pack(
+            anchor="w", fill="x", pady=8)
+        actions = ttk.Frame(body)
+        actions.pack(fill="x")
+        preview.refresh_btn = ttk.Button(actions, text="Refresh device",
+                                         command=lambda: self._prof_preview_read(preview))
+        preview.refresh_btn.pack(side="left")
+        preview.close_btn = ttk.Button(actions, text="Close",
+                                       command=lambda: self._prof_close_preview(preview))
+        preview.close_btn.pack(side="right")
+        preview.push_btn = ttk.Button(actions, text="Push to device", state="disabled",
+                                      command=lambda: self._prof_push_backup(preview))
+        preview.push_btn.pack(side="right", padx=8)
+        self._prof_preview_fill(preview, {})
+        self._prof_preview_read(preview)
+
+    def _prof_close_preview(self, preview):
+        if preview.pushing:
+            return
+        preview.destroy()
+        if self.prof_preview is preview:
+            self.prof_preview = None
+
+    def _prof_preview_fill(self, preview, current):
+        tree, backup = preview.tree, preview.backup
+        tree.delete(*tree.get_children())
+        changes = 0
+        for fid, saved in backup.values.items():
+            fs = backup.profile.fields[fid]
+
+            def display(value):
+                # Nine significant digits preserve single-precision HART floats.
+                return f"{value:.9g}" if fs.type == "float" else fs.format(value)
+
+            if not backup.profile.is_writable(fid):
+                action, tag = "Keep device value", "readonly"
+            elif fid not in current:
+                action, tag = "Not compared", ""
+            elif fs.encode(saved) == fs.encode(current[fid]):
+                action, tag = "Unchanged", ""
+            else:
+                action, tag = "Change", "changed"
+                changes += 1
+            tree.insert("", "end", iid=fid, values=(fs.label, display(saved),
+                        display(current[fid]) if fid in current else "Unavailable", action),
+                        tags=(tag,) if tag else ())
+        return changes
+
+    def _prof_preview_read(self, preview):
+        preview.push_btn["state"] = "disabled"
+        preview.refresh_btn["state"] = "disabled"
+        preview.device_master = None
+        preview.status.set("Reading destination settings for comparison...")
+        if not (self.connected and self.hart):
+            preview.status.set("Connect to a device, then click Refresh device.")
+            preview.destination.set("Destination: disconnected")
+            preview.refresh_btn["state"] = "normal"
+            return
+        m, backup = self.hart, preview.backup
+
+        def job():
+            identity = m.read_identity()
+            backup.check_target(identity)
+            return identity, backup.profile.read_all(m)
+
+        def done(result):
+            if not preview.winfo_exists():
+                return
+            identity, current = result
+            preview.refresh_btn["state"] = "normal"
+            if not (self.connected and self.hart is m):
+                preview.status.set("Device connection changed. Click Refresh device to compare again.")
+                return
+            preview.device_master, preview.identity = m, identity
+            preview.destination.set(f"Destination device: {identity.get('device_id', '?')}")
+            changes = self._prof_preview_fill(preview, current)
+            missing = set(backup.writable_fields) - current.keys()
+            if missing:
+                preview.status.set("Incomplete device read; cannot compare: " + ", ".join(sorted(missing)))
+            elif not backup.writable_fields:
+                preview.status.set("This backup contains only read-only values.")
+            elif not changes:
+                preview.status.set("All writable settings already match the backup.")
+            else:
+                preview.status.set(f"Compatible device. {changes} settings will change. "
+                                   "Review the saved values, then click Push to device.")
+                preview.push_btn["state"] = "normal"
+            self._dump_trace()
+
+        def err(error):
+            if not preview.winfo_exists():
+                return
+            preview.refresh_btn["state"] = "normal"
+            preview.status.set(f"Cannot push this backup: {error[0]}")
+            preview.destination.set("Destination: comparison unavailable")
+            self._prof_preview_fill(preview, {})
+            self._dump_trace()
+
+        self.worker.submit(job, on_done=done, on_error=err)
+
+    def _prof_push_backup(self, preview):
+        if not (self.connected and self.hart is preview.device_master):
+            preview.push_btn["state"] = "disabled"
+            preview.status.set("Device connection changed. Click Refresh device before pushing.")
+            return
+        backup, m = preview.backup, preview.device_master
+        prof = backup.profile
+        if not messagebox.askyesno(
+                "Confirm push to device",
+                f"Source device: {backup.identity.get('device_id', '?')}\n"
+                f"Destination device: {preview.identity.get('device_id', '?')}\n"
+                f"Profile: {prof.name}\n\n"
+                f"Push the {len(backup.writable_fields)} writable settings from this preview?\n\n"
+                "Read-only fields will be preserved on the destination. "
+                "If a command fails, earlier changes may already have been applied."):
+            return
+        preview.pushing = True
+        for button in (preview.push_btn, preview.refresh_btn, preview.close_btn):
+            button["state"] = "disabled"
+        preview.status.set("Pushing configuration and verifying device settings...")
+        self._prof_backup_busy(True)
+        self._set_status("Pushing configuration...", busy=True)
+        destination_id = preview.identity.get("device_id")
+
+        def job():
+            identity = m.read_identity()
+            if identity.get("device_id") != destination_id:
+                raise ProfileError("Destination device changed since preview; refresh before pushing")
+            return backup.restore(m)
+
+        def done(values):
+            preview.pushing = False
+            preview.refresh_btn["state"] = "normal"
+            preview.close_btn["state"] = "normal"
+            self._prof_preview_fill(preview, values)
+            preview.status.set("Configuration pushed and verified by reading the destination device.")
+            if self.connected and self.hart is m:
+                self.prof = prof
+                prof.cache.update(values)
+                self.prof_name.set(prof.name)
+                self._build_profile_rows()
+                self._prof_fill(values)
+                self._set_status("Configuration uploaded and verified", ok=True)
+                self._read_config_all()
+                self._read_ranging_all()
+            else:
+                self._set_status("Connected" if self.connected else "Disconnected",
+                                 ok=self.connected)
+            self._prof_backup_busy(False)
+            self._dump_trace()
+            messagebox.showinfo("Push complete", "Configuration uploaded and verified "
+                                "by reading the destination device.")
+
+        def err(error):
+            preview.pushing = False
+            preview.refresh_btn["state"] = "normal"
+            preview.close_btn["state"] = "normal"
+            preview.status.set(f"Push stopped: {error[0]} Refresh the device before trying again.")
+            self._prof_backup_error(error)
+
+        self.worker.submit(job, on_done=done, on_error=err)
 
     def _prof_read_all(self):
         if not (self._guard() and self.prof):

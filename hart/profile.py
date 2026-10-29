@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import struct
+from copy import deepcopy
 from dataclasses import dataclass, field as dcfield
 from typing import Dict, List, Optional
 
@@ -174,6 +175,7 @@ class CommandSpec:
 
 class DeviceProfile:
     def __init__(self, doc: dict, source: str = "<dict>"):
+        self.document = deepcopy(doc)  # retain the command layouts for backups
         self.source = source
         self.name = doc.get("name", "unnamed profile")
         self.description = doc.get("description", "")

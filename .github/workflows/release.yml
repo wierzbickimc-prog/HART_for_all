@@ -7,7 +7,27 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk
+      - run: python -m pip install -r requirements.txt
+      - name: Run offline, socket, and GUI tests
+        run: |
+          python tests/test_frame.py
+          python tests/test_identity.py
+          python tests/test_profile.py
+          python tests/test_backup.py
+          python tests/test_emulator.py
+          xvfb-run -a python tests/test_study.py
+          xvfb-run -a python tests/test_backup_preview.py
+
   macos:
+    needs: tests
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +36,10 @@ jobs:
         with:
           name: HART_for_all-macOS
           path: dist/HART_for_all-macOS.zip
+          if-no-files-found: error
 
   linux:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,10 +47,12 @@ jobs:
       - run: bash packaging/linux/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: HART_for_all-linux
-          path: dist/HART_for_all-x86_64.AppImage
+          name: HART_for_all-Linux
+          path: dist/HART_for_all-Linux-x86_64.AppImage
+          if-no-files-found: error
 
   windows:
+    needs: tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,10 +63,11 @@ jobs:
       - run: packaging\windows\build.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: HART_for_all-windows
+          name: HART_for_all-Windows
           path: |
-            dist/HART_for_all.exe
-            dist/Install_CP210x_Driver.bat
+            dist/HART_for_all-Windows.exe
+            dist/Install_CP210x_Driver-Windows.bat
+          if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -58,6 +83,7 @@ jobs:
         with:
           files: |
             artifacts/HART_for_all-macOS/HART_for_all-macOS.zip
-            artifacts/HART_for_all-linux/HART_for_all-x86_64.AppImage
-            artifacts/HART_for_all-windows/HART_for_all.exe
-            artifacts/HART_for_all-windows/Install_CP210x_Driver.bat
+            artifacts/HART_for_all-Linux/HART_for_all-Linux-x86_64.AppImage
+            artifacts/HART_for_all-Windows/HART_for_all-Windows.exe
+            artifacts/HART_for_all-Windows/Install_CP210x_Driver-Windows.bat
+          fail_on_unmatched_files: true
